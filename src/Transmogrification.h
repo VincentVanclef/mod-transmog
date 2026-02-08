@@ -54,8 +54,9 @@ enum TransmogAcoreStrings // Language.h might have same entries, appears when ex
     LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY,
     LANG_ERR_TRANSMOG_NOT_ENOUGH_TOKENS,
 
-    LANG_ERR_UNTRANSMOG_OK,
-    LANG_ERR_UNTRANSMOG_NO_TRANSMOGS,
+    // Keep existing core string IDs intact (11108+ used by "untransmog" and other module strings)
+    LANG_ERR_UNTRANSMOG_OK = 11108,
+    LANG_ERR_UNTRANSMOG_NO_TRANSMOGS = 11109,
 
 #ifdef PRESETS
     LANG_PRESET_ERR_INVALID_NAME,
@@ -67,7 +68,18 @@ enum TransmogAcoreStrings // Language.h might have same entries, appears when ex
     LANG_CMD_TRANSMOG_BEGIN_SYNC = 11115,
     LANG_CMD_TRANSMOG_COMPLETE_SYNC = 11116,
     LANG_CMD_TRANSMOG_VENDOR_INTERFACE_ENABLE = 11117,
-    LANG_CMD_TRANSMOG_VENDOR_INTERFACE_DISABLE = 11118
+    LANG_CMD_TRANSMOG_VENDOR_INTERFACE_DISABLE = 11118,
+
+    // New string ID (add to acore_string in world DB)
+    LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS = 11119
+};
+
+// Payment method for transmogrification costs
+enum TransmogPaymentType : uint8
+{
+    TMOG_PAY_GOLD = 0,
+    TMOG_PAY_VOTE_POINTS = 1,
+    TMOG_PAY_GOLD_AND_VOTE_POINTS = 2
 };
 
 enum ArmorClassSpellIDs
@@ -168,6 +180,14 @@ public:
     uint32 TokenEntry;
     uint32 TokenAmount;
 
+    // Payment type for transmogrification service
+    // 0 = Gold (default), 1 = Vote Points, 2 = Gold + Vote Points
+    uint8 PaymentType;
+    // Vote Point cost = ceil((gold_cost_in_gold) * VotePointsPerGold) + VotePointsFlatCost
+    // where gold_cost_in_gold = (final_cost_in_copper / 10000.0)
+    uint32 VotePointsFlatCost;
+    float VotePointsPerGold;
+
     bool AllowPoor;
     bool AllowCommon;
     bool AllowUncommon;
@@ -242,6 +262,10 @@ public:
     bool GetRequireToken() const;
     uint32 GetTokenEntry() const;
     uint32 GetTokenAmount() const;
+
+    uint8 GetPaymentType() const;
+    uint32 GetVotePointsFlatCost() const;
+    float GetVotePointsPerGold() const;
 
     bool GetAllowMixedArmorTypes() const;
     bool GetAllowLowerTiers() const;

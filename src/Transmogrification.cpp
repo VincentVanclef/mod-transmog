@@ -5,6 +5,12 @@
 #include "Tokenize.h"
 #include "WorldSessionMgr.h"
 
+#include <cmath>
+
+// RTG Vote Points currency
+#include "CurrencyHandler.h"
+#include "AccountCurrency.h"
+
 Transmogrification* Transmogrification::instance()
 {
     static Transmogrification instance;
@@ -503,6 +509,35 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, ObjectGuid
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost, bool hidden_transmog)
 {
     int32 cost = 0;
+    auto calcVotePointsCost = [this](int32 copperCost) -> uint32
+    {
+        if (copperCost <= 0)
+            return VotePointsFlatCost;
+
+        double gold = static_cast<double>(copperCost) / 10000.0; // 1 gold = 10000 copper
+        uint32 scaled = 0;
+        if (VotePointsPerGold > 0.0f)
+            scaled = static_cast<uint32>(std::ceil(gold * static_cast<double>(VotePointsPerGold)));
+
+        return VotePointsFlatCost + scaled;
+    };
+
+    auto trySpendVotePoints = [player](uint32 vpCost) -> bool
+    {
+        if (vpCost == 0)
+            return true;
+        if (!player || !player->GetSession())
+            return false;
+
+        AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
+        if (!currency)
+            return false;
+        if (currency->GetVP() < vpCost)
+            return false;
+
+        currency->ModifyVP(-static_cast<int32>(vpCost));
+        return true;
+    };
     // slot of the transmogrified item
     if (slot >= EQUIPMENT_SLOT_END)
     {
@@ -531,9 +566,22 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
                     player->GetName(), player->GetGUID().ToString(), -cost, itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
             else
             {
-                if (!player->HasEnoughMoney(cost))
-                    return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
-                player->ModifyMoney(-cost, false);
+                bool payGold = (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+                bool payVP = (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+
+                if (payVP)
+                {
+                    uint32 vpCost = calcVotePointsCost(cost);
+                    if (!trySpendVotePoints(vpCost))
+                        return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
+                }
+
+                if (payGold)
+                {
+                    if (!player->HasEnoughMoney(cost))
+                        return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
+                    player->ModifyMoney(-cost, false);
+                }
             }
         }
         SetFakeEntry(player, HIDDEN_ITEM_ID, slot, itemTransmogrified); // newEntry
@@ -574,9 +622,22 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
                         player->GetName(), player->GetGUID().ToString(), -cost, itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
                 else
                 {
-                    if (!player->HasEnoughMoney(cost))
-                        return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
-                    player->ModifyMoney(-cost, false);
+                    bool payGold = (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+                    bool payVP = (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+
+                    if (payVP)
+                    {
+                        uint32 vpCost = calcVotePointsCost(cost);
+                        if (!trySpendVotePoints(vpCost))
+                            return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
+                    }
+
+                    if (payGold)
+                    {
+                        if (!player->HasEnoughMoney(cost))
+                            return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
+                        player->ModifyMoney(-cost, false);
+                    }
                 }
             }
         }
@@ -1116,6 +1177,13 @@ void Transmogrification::LoadConfig(bool reload)
     TokenEntry = sConfigMgr->GetOption<uint32>("Transmogrification.TokenEntry", 49426);
     TokenAmount = sConfigMgr->GetOption<uint32>("Transmogrification.TokenAmount", 1);
 
+    PaymentType = sConfigMgr->GetOption<uint32>("Transmogrification.PaymentType", TMOG_PAY_GOLD);
+    if (PaymentType > TMOG_PAY_GOLD_AND_VOTE_POINTS)
+        PaymentType = TMOG_PAY_GOLD;
+
+    VotePointsFlatCost = sConfigMgr->GetOption<uint32>("Transmogrification.VotePointsFlatCost", 0);
+    VotePointsPerGold = sConfigMgr->GetOption<float>("Transmogrification.VotePointsPerGold", 0.0f);
+
     AllowPoor = sConfigMgr->GetOption<bool>("Transmogrification.AllowPoor", false);
     AllowCommon = sConfigMgr->GetOption<bool>("Transmogrification.AllowCommon", false);
     AllowUncommon = sConfigMgr->GetOption<bool>("Transmogrification.AllowUncommon", true);
@@ -1298,6 +1366,21 @@ uint32 Transmogrification::GetTokenEntry() const
 uint32 Transmogrification::GetTokenAmount() const
 {
     return TokenAmount;
+}
+
+uint8 Transmogrification::GetPaymentType() const
+{
+    return PaymentType;
+}
+
+uint32 Transmogrification::GetVotePointsFlatCost() const
+{
+    return VotePointsFlatCost;
+}
+
+float Transmogrification::GetVotePointsPerGold() const
+{
+    return VotePointsPerGold;
 }
 bool Transmogrification::GetAllowMixedArmorTypes() const
 {

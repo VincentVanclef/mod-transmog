@@ -432,18 +432,19 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
     return allowedItems;
 }
 
-void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 cost)
+void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 /*cost*/)
 {
     uint8 slot = sT->selectionCache[player->GetGUID()];
     WorldSession* session = player->GetSession();
-    if (!player->HasEnoughMoney(cost))
-    {
-        ChatHandler(session).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY);
-        return;
-    }
+
+    // IMPORTANT:
+    // Do NOT pre-check gold here.
+    // Payment may be Vote Points (or mixed), and Transmogrify() already performs the correct
+    // currency validation and charges the appropriate currencies.
     TransmogAcoreStrings res = sT->Transmogrify(player, itemEntry, slot);
+
     if (res == LANG_ERR_TRANSMOG_OK)
-        session->SendAreaTriggerMessage("{}",GTS(LANG_ERR_TRANSMOG_OK));
+        session->SendAreaTriggerMessage("{}", GTS(LANG_ERR_TRANSMOG_OK));
     else
         ChatHandler(session).SendNotification(res);
 }
@@ -861,7 +862,61 @@ public:
                         break;
                     }
                     Item* newItem = allowedItems.at(i);
-                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(newItem->GetEntry(), 30, 30, -18, 0) + sT->GetItemLink(newItem, session), slot, newItem->GetEntry(), GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->GetEntry(), 40, 40, -15, -10) + sT->GetItemLink(newItem, session) + lineEnd, price, false);
+                    {
+                        uint8 paymentType = sT->GetPaymentType(); // 0=Gold, 1=VP, 2=Gold+VP
+
+                        auto calcVpCost = [&]() -> uint32
+                        {
+                            // price is in copper
+                            if (price <= 0)
+                                return sT->GetVotePointsFlatCost();
+
+                            double gold = static_cast<double>(price) / 10000.0;
+                            uint32 scaled = 0;
+                            float perGold = sT->GetVotePointsPerGold();
+                            if (perGold > 0.0f)
+                                scaled = static_cast<uint32>(std::ceil(gold * static_cast<double>(perGold)));
+
+                            return sT->GetVotePointsFlatCost() + scaled;
+                        };
+
+                        uint32 vpCost = (paymentType == 0 ? 0u : calcVpCost());
+
+                        std::string lineText = sT->GetItemIcon(newItem->GetEntry(), 30, 30, -18, 0) + sT->GetItemLink(newItem, session);
+                        std::string confirmText = GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->GetEntry(), 40, 40, -15, -10) + sT->GetItemLink(newItem, session) + lineEnd;
+
+                        // Colored VP text
+                        auto vpText = [&](uint32 vp) -> std::string
+                        {
+                            std::ostringstream os;
+                            os << "|cff00ff00" << vp << " VP|r";
+                            return os.str();
+                        };
+
+                        uint32 boxMoney = price; // copper shown in UI (gold cost column)
+
+                        if (paymentType == 1)
+                        {
+                            // VP-only: show no coin cost in the UI, display VP in the line text
+                            boxMoney = 0;
+                            if (vpCost > 0)
+                            {
+                                lineText += "  -  Cost: " + vpText(vpCost);
+                                confirmText += "\n\nCost: " + vpText(vpCost);
+                            }
+                        }
+                        else if (paymentType == 2)
+                        {
+                            // Gold + VP: keep coin cost in UI, append VP to the line text
+                            if (vpCost > 0)
+                            {
+                                lineText += "  +  " + vpText(vpCost);
+                                confirmText += "\n\nVote Points: " + vpText(vpCost);
+                            }
+                        }
+
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, lineText, slot, newItem->GetEntry(), confirmText, boxMoney, false);
+                    }
                 }
             }
             if (gossipPageNumber == EQUIPMENT_SLOT_END + 11)

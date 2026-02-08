@@ -133,6 +133,31 @@ Transmogrification.TokenEntry = 49426
 Transmogrification.TokenAmount = 1
 
 #
+#    VOTE POINT COST (RTG AccountCurrency)
+#
+#    Transmogrification.PaymentType
+#        Description: Select how transmogrification costs are paid.
+#        Options:     0 - Gold only (default)
+#                     1 - Vote Points only
+#                     2 - Gold + Vote Points (both are charged)
+#        Default:     0
+#
+#    Transmogrification.VotePointsFlatCost
+#        Description: Flat Vote Points added per transmogrification action.
+#        Default:     0
+#
+#    Transmogrification.VotePointsPerGold
+#        Description: Additional Vote Points cost based on the FINAL gold cost.
+#                     Formula:
+#                       vpCost = ceil(goldCostInGold * VotePointsPerGold) + VotePointsFlatCost
+#                     where goldCostInGold = finalCopperCost / 10000.0
+#        Default:     0.0
+
+Transmogrification.PaymentType = 0
+Transmogrification.VotePointsFlatCost = 0
+Transmogrification.VotePointsPerGold = 0.0
+
+#
 #    REQUIREMENTS
 #
 #    Transmogrification.AllowPoor
