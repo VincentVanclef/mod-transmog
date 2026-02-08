@@ -8,7 +8,6 @@
 #include <cmath>
 
 // RTG Vote Points currency
-#include "CurrencyHandler.h"
 #include "AccountCurrency.h"
 
 Transmogrification* Transmogrification::instance()
