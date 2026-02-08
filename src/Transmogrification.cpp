@@ -7,8 +7,6 @@
 
 #include <cmath>
 
-// RTG Vote Points currency
-
 Transmogrification* Transmogrification::instance()
 {
     static Transmogrification instance;
