@@ -155,10 +155,17 @@ public:
     float SetCostModifier;
     int32 SetCopperCost;
 
+    // Additional Vote Point costs for preset (set) feature
+    uint32 SetSaveVotePoints;
+    uint32 SetApplyVotePoints;
+
     bool GetEnableSets() const;
     uint8 GetMaxSets() const;
     float GetSetCostModifier() const;
     int32 GetSetCopperCost() const;
+
+    uint32 GetSetSaveVotePoints() const;
+    uint32 GetSetApplyVotePoints() const;
 
     void LoadPlayerSets(ObjectGuid pGUID);
     void UnloadPlayerSets(ObjectGuid pGUID);
@@ -266,6 +273,10 @@ public:
     uint8 GetPaymentType() const;
     uint32 GetVotePointsFlatCost() const;
     float GetVotePointsPerGold() const;
+
+    // Account Vote Points helpers (used by gossip/preset scripts)
+    bool HasVotePoints(Player* player, uint32 amount) const;
+    bool SpendVotePoints(Player* player, uint32 amount) const;
 
     bool GetAllowMixedArmorTypes() const;
     bool GetAllowLowerTiers() const;

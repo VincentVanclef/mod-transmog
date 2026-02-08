@@ -158,6 +158,12 @@ Transmogrification.VotePointsFlatCost = 0
 Transmogrification.VotePointsPerGold = 0.0
 
 #
+# Vote Point costs for transmog sets
+#
+Transmog.Set.Save.VotePoints = 20
+Transmog.Set.Apply.VotePoints = 5
+
+#
 #    REQUIREMENTS
 #
 #    Transmogrification.AllowPoor

@@ -8,8 +8,6 @@
 #include <cmath>
 
 // RTG Vote Points currency
-//#include "CurrencyHandler.h"
-//#include "AccountCurrency.h"
 
 Transmogrification* Transmogrification::instance()
 {
@@ -111,6 +109,16 @@ float Transmogrification::GetSetCostModifier() const
 int32 Transmogrification::GetSetCopperCost() const
 {
     return SetCopperCost;
+}
+
+uint32 Transmogrification::GetSetSaveVotePoints() const
+{
+    return SetSaveVotePoints;
+}
+
+uint32 Transmogrification::GetSetApplyVotePoints() const
+{
+    return SetApplyVotePoints;
 }
 
 void Transmogrification::UnloadPlayerSets(ObjectGuid pGUID)
@@ -1129,6 +1137,9 @@ void Transmogrification::LoadConfig(bool reload)
     SetCostModifier = sConfigMgr->GetOption<float>("Transmogrification.SetCostModifier", 3.0f);
     SetCopperCost = sConfigMgr->GetOption<int32>("Transmogrification.SetCopperCost", 0);
 
+    SetSaveVotePoints = sConfigMgr->GetOption<uint32>("Transmogrification.SetSaveVotePoints", 20);
+    SetApplyVotePoints = sConfigMgr->GetOption<uint32>("Transmogrification.SetApplyVotePoints", 5);
+
     if (MaxSets > MAX_OPTIONS)
         MaxSets = MAX_OPTIONS;
 
@@ -1381,6 +1392,34 @@ uint32 Transmogrification::GetVotePointsFlatCost() const
 float Transmogrification::GetVotePointsPerGold() const
 {
     return VotePointsPerGold;
+}
+
+bool Transmogrification::HasVotePoints(Player* player, uint32 amount) const
+{
+    if (!player || amount == 0)
+        return true;
+
+    AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
+    if (!currency)
+        return false;
+
+    return currency->GetVP() >= amount;
+}
+
+bool Transmogrification::SpendVotePoints(Player* player, uint32 amount) const
+{
+    if (!player || amount == 0)
+        return true;
+
+    AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
+    if (!currency)
+        return false;
+
+    if (currency->GetVP() < amount)
+        return false;
+
+    currency->ModifyVP(-static_cast<int32>(amount));
+    return true;
 }
 bool Transmogrification::GetAllowMixedArmorTypes() const
 {

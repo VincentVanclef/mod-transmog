@@ -596,7 +596,13 @@ public:
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t" + it->second, EQUIPMENT_SLOT_END + 6, it->first);
 
                 if (sT->presetByName[player->GetGUID()].size() < sT->GetMaxSets())
-                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set"), EQUIPMENT_SLOT_END + 8, 0);
+                {
+                    std::string saveSetText = "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set");
+                    uint32 vpSaveCost = sT->GetSetSaveVotePoints();
+                    if (vpSaveCost > 0)
+                        saveSetText += " (" + std::to_string(vpSaveCost) + " VP)";
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, saveSetText, EQUIPMENT_SLOT_END + 8, 0);
+                }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
                 SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
             } break;
@@ -605,6 +611,14 @@ public:
                 if (!sT->GetEnableSets())
                 {
                     OnGossipHello(player, creature);
+                    return true;
+                }
+                // Charge Vote Points for applying a saved set
+                uint32 vpApplyCost = sT->GetSetApplyVotePoints();
+                if (vpApplyCost && !sT->SpendVotePoints(player, vpApplyCost))
+                {
+                    ChatHandler(session).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
                     return true;
                 }
                 // action = presetID
@@ -626,7 +640,14 @@ public:
                 for (Transmogrification::slotMap::const_iterator it = sT->presetById[player->GetGUID()][action].begin(); it != sT->presetById[player->GetGUID()][action].end(); ++it)
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(it->second, 30, 30, -18, 0) + sT->GetItemLink(it->second, session), sender, action);
 
-                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t" + GetLocaleText(locale, "use_set"), EQUIPMENT_SLOT_END + 5, action, GetLocaleText(locale, "confirm_use_set") + sT->presetByName[player->GetGUID()][action], 0, false);
+                std::string useSetText = "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t" + GetLocaleText(locale, "use_set");
+                uint32 vpApplyCost = sT->GetSetApplyVotePoints();
+                if (vpApplyCost > 0)
+                    useSetText += " (" + std::to_string(vpApplyCost) + " VP)";
+                std::string confirmSetText = GetLocaleText(locale, "confirm_use_set") + sT->presetByName[player->GetGUID()][action];
+                if (vpApplyCost > 0)
+                    confirmSetText += "\n\nVote Points: " + std::to_string(vpApplyCost) + " VP";
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, useSetText, EQUIPMENT_SLOT_END + 5, action, confirmSetText, 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|t" + GetLocaleText(locale, "delete_set"), EQUIPMENT_SLOT_END + 7, action, GetLocaleText(locale, "confirm_delete_set") + sT->presetByName[player->GetGUID()][action] + "?", 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
                 SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
@@ -675,7 +696,22 @@ public:
                     }
                 }
                 if (canSave)
-                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set"), 0, 0, GetLocaleText(locale, "insert_set_name"), cost*sT->GetSetCostModifier() + sT->GetSetCopperCost(), true);
+                {
+                    std::string insertName = GetLocaleText(locale, "insert_set_name");
+                    uint32 vpSaveCost = sT->GetSetSaveVotePoints();
+                    uint32 vpApplyCost = sT->GetSetApplyVotePoints();
+                    if (vpSaveCost > 0)
+                    {
+                        insertName += " (" + std::to_string(vpSaveCost) + " VP to save";
+                        if (vpApplyCost > 0)
+                            insertName += ", " + std::to_string(vpApplyCost) + " VP to apply";
+                        insertName += ")";
+                    }
+
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                        "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set"),
+                        0, 0, insertName, cost*sT->GetSetCostModifier() + sT->GetSetCopperCost(), true);
+                }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), sender, action);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
                 SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
@@ -770,6 +806,13 @@ public:
                     break;
                 }
 
+                uint32 vpSaveCost = sT->GetSetSaveVotePoints();
+                if (vpSaveCost && !sT->HasVotePoints(player, vpSaveCost))
+                {
+                    ChatHandler(player->GetSession()).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
+                    break;
+                }
+
                 std::ostringstream ss;
                 for (std::map<uint8, uint32>::iterator it = items.begin(); it != items.end(); ++it)
                 {
@@ -780,6 +823,8 @@ public:
                 CharacterDatabase.Execute("REPLACE INTO `custom_transmogrification_sets` (`Owner`, `PresetID`, `SetName`, `SetData`) VALUES ({}, {}, \"{}\", \"{}\")", player->GetGUID().GetCounter(), uint32(presetID), name, ss.str());
                 if (cost)
                     player->ModifyMoney(-cost);
+                if (vpSaveCost)
+                    sT->SpendVotePoints(player, vpSaveCost);
                 break;
             }
         }
