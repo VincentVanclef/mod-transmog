@@ -475,17 +475,16 @@ void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*s
     UpdateItem(player, itemTransmogrified);
 }
 
-bool Transmogrification::AddCollectedAppearance(uint32 accountId, uint32 itemId)
+bool Transmogrification::AddCollectedAppearance(uint32 ownerGuid, uint32 itemId)
 {
-    if (!collectionCache.contains(accountId))
+    if (!collectionCache.contains(ownerGuid))
     {
-        collectionCache.insert({ accountId, {itemId} });
+        collectionCache.insert({ ownerGuid, { itemId } });
         return true;
     }
 
-    auto res = collectionCache[accountId].insert(itemId);
-    bool inserted = res.second;
-    return inserted;
+    auto res = collectionCache[ownerGuid].insert(itemId);
+    return res.second;
 }
 
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost) {
@@ -1323,14 +1322,14 @@ void Transmogrification::LoadCollections()
     {
         LOG_INFO("module", "Loading transmog appearance collection cache....");
         uint32 collectedAppearanceCount = 0;
-        QueryResult result = CharacterDatabase.Query("SELECT account_id, item_template_id FROM custom_unlocked_appearances");
+        QueryResult result = CharacterDatabase.Query("SELECT owner_guid, item_template_id FROM custom_unlocked_appearances");
         if (result)
         {
             do
             {
-                uint32 accountId = (*result)[0].Get<uint32>();
-                uint32 itemId = (*result)[1].Get<uint32>();
-                if (sTransmogrification->AddCollectedAppearance(accountId, itemId))
+                uint32 ownerGuid = (*result)[0].Get<uint32>();
+                uint32 itemId    = (*result)[1].Get<uint32>();
+                if (sTransmogrification->AddCollectedAppearance(ownerGuid, itemId))
                     collectedAppearanceCount++;
 
             } while (result->NextRow());

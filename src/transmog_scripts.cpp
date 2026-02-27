@@ -390,11 +390,11 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
 
     if (sT->GetUseCollectionSystem())
     {
-        uint32 accountId = player->GetSession()->GetAccountId();
-        if (sT->collectionCache.find(accountId) == sT->collectionCache.end())
+        uint32 ownerGuid = player->GetGUID().GetCounter();
+        if (sT->collectionCache.find(ownerGuid) == sT->collectionCache.end())
             return allowedItems;
 
-        for (uint32 itemId : sT->collectionCache[accountId])
+        for (uint32 itemId : sT->collectionCache[ownerGuid])
         {
             if (!sObjectMgr->GetItemTemplate(itemId))
                 continue;
@@ -1111,8 +1111,9 @@ private:
             return;
         if (itemTemplate->Class != ITEM_CLASS_ARMOR && itemTemplate->Class != ITEM_CLASS_WEAPON)
             return;
-        uint32 itemId = itemTemplate->ItemId;
+        uint32 itemId    = itemTemplate->ItemId;
         uint32 accountId = player->GetSession()->GetAccountId();
+        uint32 ownerGuid = player->GetGUID().GetCounter();
         std::string itemName = itemTemplate -> Name1;
 
         // get locale item name
@@ -1124,12 +1125,12 @@ private:
         tempStream << std::hex << ItemQualityColors[itemTemplate->Quality];
         std::string itemQuality = tempStream.str();
         bool showChatMessage = !(player->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).value) && !sT->CanNeverTransmog(itemTemplate);
-        if (sT->AddCollectedAppearance(accountId, itemId))
+        if (sT->AddCollectedAppearance(ownerGuid, itemId))
         {
             if (showChatMessage)
                 ChatHandler(player->GetSession()).PSendSysMessage( R"(|c{}|Hitem:{}:0:0:0:0:0:0:0:0|h[{}]|h|r {})", itemQuality, itemId, itemName, GetLocaleText(locale, "added_appearance"));
 
-            CharacterDatabase.Execute( "INSERT INTO custom_unlocked_appearances (account_id, item_template_id) VALUES ({}, {})", accountId, itemId);
+            CharacterDatabase.Execute( "INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
         }
     }
 

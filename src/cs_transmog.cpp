@@ -60,11 +60,16 @@ public:
     static bool HandleSyncTransMogCommand(ChatHandler* handler)
     {
         Player* player = handler->GetPlayer();
-        uint32 accountId = player->GetSession()->GetAccountId();
+        uint32 ownerGuid = player->GetGUID().GetCounter();
         handler->SendSysMessage(LANG_CMD_TRANSMOG_BEGIN_SYNC);
         
-        for (uint32 itemId : sTransmogrification->collectionCache[accountId])
-            handler->PSendSysMessage("TRANSMOG_SYNC:{}", itemId);
+        if (sTransmogrification->collectionCache.find(ownerGuid) != sTransmogrification->collectionCache.end())
+        {
+            for (uint32 itemId : sTransmogrification->collectionCache[ownerGuid])
+            {
+                handler->PSendSysMessage("TRANSMOG_SYNC:{}", itemId);
+            }
+        }
         
         handler->SendSysMessage(LANG_CMD_TRANSMOG_COMPLETE_SYNC);
         return true;
@@ -132,6 +137,7 @@ public:
 
         auto guid = player->GetGUID();
         uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid);
+        uint32 ownerGuid = guid.GetCounter();
         uint32 itemId = itemTemplate->ItemId;
 
         std::stringstream tempStream;
@@ -149,7 +155,7 @@ public:
         std::string playerName = player->GetName();
         std::string nameLink = handler->playerLink(playerName);
 
-        if (sTransmogrification->AddCollectedAppearance(accountId, itemId))
+        if (sTransmogrification->AddCollectedAppearance(ownerGuid, itemId))
         {
             // Notify target of new item in appearance collection
             if (target && !(target->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).value) && !sTransmogrification->CanNeverTransmog(itemTemplate))
@@ -159,7 +165,7 @@ public:
             if (isNotConsole && target != handler->GetPlayer())
                 handler->PSendSysMessage(R"(|c{}|Hitem:{}:0:0:0:0:0:0:0:0|h[{}]|h|r has been added to the appearance collection of Player {}.)", itemQuality.c_str(), itemId, itemName.c_str(), nameLink);
 
-            CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, item_template_id) VALUES ({}, {})", accountId, itemId);
+            CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
         }
         else
         {
@@ -212,6 +218,7 @@ public:
         uint32 error = 0;
         uint32 itemId;
         uint32 accountId = playerData->AccountId;
+        uint32 ownerGuid = guid.GetCounter();
 
         for (uint32 i = 0; i < MAX_ITEM_SET_ITEMS; ++i)
         {
@@ -235,9 +242,9 @@ public:
                         continue;
                     }
 
-                    if (sTransmogrification->AddCollectedAppearance(accountId, itemId))
+                    if (sTransmogrification->AddCollectedAppearance(ownerGuid, itemId))
                     {
-                        CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, item_template_id) VALUES ({}, {})", accountId, itemId);
+                        CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
                         added = true;
                     }
                 }
