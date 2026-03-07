@@ -27,6 +27,7 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 #include "DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "Opcodes.h"
+#include "SpellScript.h"
 
 #define sT  sTransmogrification
 #define GTS session->GetAcoreString // dropped translation support, no one using?
@@ -469,6 +470,36 @@ class npc_transmogrifier : public CreatureScript
 {
 public:
     npc_transmogrifier() : CreatureScript("npc_transmogrifier") { }
+
+    static bool OpenPortableMenu(Player* player)
+    {
+        if (!player)
+            return false;
+
+        if (!sT->IsEnabled())
+            return false;
+
+        if (!sT->IsPortableNPCEnabled)
+            return false;
+
+        uint32 creatureEntry = sT->PetEntry;
+        if (!creatureEntry)
+            return false;
+
+        Position pos;
+        player->GetNearPosition(pos, 2.0f, 0.0f);
+
+        Creature* creature = player->SummonCreature(creatureEntry, pos, TEMPSUMMON_TIMED_DESPAWN, 5 * MINUTE * IN_MILLISECONDS);
+        TempSummon* summon = creature ? creature->ToTempSummon() : nullptr;
+        if (!summon)
+            return false;
+
+        summon->SetFacingToObject(player);
+        player->SetFacingToObject(summon);
+
+        npc_transmogrifier script;
+        return script.OnGossipHello(player, summon);
+    }
 
     struct npc_transmogrifierAI : ScriptedAI
     {
@@ -1336,6 +1367,38 @@ public:
     }
 };
 
+class spell_transmogrifier_portable : public SpellScript
+{
+    PrepareSpellScript(spell_transmogrifier_portable);
+
+    void HandleAfterCast()
+    {
+        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
+        if (!player)
+            return;
+
+        if (player->IsInCombat())
+        {
+            ChatHandler(player->GetSession()).SendSysMessage("You cannot use portable transmogrification while in combat.");
+            return;
+        }
+
+        if (player->IsDead())
+        {
+            ChatHandler(player->GetSession()).SendSysMessage("You cannot use portable transmogrification while dead.");
+            return;
+        }
+
+        if (!npc_transmogrifier::OpenPortableMenu(player))
+            ChatHandler(player->GetSession()).SendSysMessage("Portable transmogrification could not be opened. Check Transmogrification.EnablePortable, the portable spell binding, and the spell's summon creature entry.");
+    }
+
+    void Register() override
+    {
+        AfterCast += SpellCastFn(spell_transmogrifier_portable::HandleAfterCast);
+    }
+};
+
 class global_transmog_script : public GlobalScript
 {
 public:
@@ -1399,6 +1462,7 @@ void AddSC_Transmog()
     new global_transmog_script();
     new unit_transmog_script();
     new npc_transmogrifier();
+    RegisterSpellScript(spell_transmogrifier_portable);
     new PS_Transmogrification();
     new WS_Transmogrification();
 }
