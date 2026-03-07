@@ -27,7 +27,6 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 #include "DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "Opcodes.h"
-#include "SpellScript.h"
 
 #define sT  sTransmogrification
 #define GTS session->GetAcoreString // dropped translation support, no one using?
@@ -466,19 +465,6 @@ void RemoveTransmogrification (Player* player)
     }
 }
 
-namespace
-{
-    static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
-    {
-        return creature ? creature->GetGUID() : player->GetGUID();
-    }
-
-    static bool IsPortableTransmogContext(Creature* creature)
-    {
-        return creature == nullptr;
-    }
-}
-
 class npc_transmogrifier : public CreatureScript
 {
 public:
@@ -492,12 +478,9 @@ public:
         {
             Player* target = ObjectAccessor::FindConnectedPlayer(player->GetGUID());
 
-            if (sT->IsPortableNPCEnabled)
+            if (TempSummon* summon = me->ToTempSummon())
             {
-                if (TempSummon* summon = me->ToTempSummon())
-                {
-                    return summon->GetOwner() == player;
-                }
+                return summon->GetOwner() == player;
             }
 
             return sTransmogrification->IsEnabled() && (target && !target->GetPlayerSetting("mod-transmog", SETTING_HIDE_TRANSMOG).IsEnabled());
@@ -509,12 +492,10 @@ public:
         return new npc_transmogrifierAI(creature);
     }
 
-    static bool OpenTransmogMenu(Player* player, Creature* creature = nullptr)
+    bool OnGossipHello(Player* player, Creature* creature) override
     {
         WorldSession* session = player->GetSession();
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
-
-        player->PlayerTalkClass->ClearMenus();
 
         // Clear the search string for the player
         sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
@@ -537,13 +518,8 @@ public:
 #endif
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 2, 0, GetLocaleText(locale, "remove_transmog_ask"), 0, false);
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END + 1, 0);
-        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
         return true;
-    }
-
-    bool OnGossipHello(Player* player, Creature* creature) override
-    {
-        return OpenTransmogMenu(player, creature);
     }
 
     bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action) override
@@ -564,9 +540,8 @@ public:
                 sT->selectionCache[player->GetGUID()] = action;
 
                 bool useVendorInterface = player->GetPlayerSetting("mod-transmog", SETTING_VENDOR_INTERFACE).IsEnabled();
-                bool canUseVendorInterface = creature && (sT->GetUseVendorInterface() || useVendorInterface) && !IsPortableTransmogContext(creature);
 
-                if (canUseVendorInterface)
+                if (sT->GetUseVendorInterface() || useVendorInterface)
                     ShowTransmogItemsInFakeVendor(player, creature, action);
                 else
                     ShowTransmogItemsInGossipMenu(player, creature, action, sender);
@@ -574,7 +549,7 @@ public:
                 break;
             }
             case EQUIPMENT_SLOT_END + 1: // Main menu
-                OpenTransmogMenu(player, creature);
+                OnGossipHello(player, creature);
                 break;
             case EQUIPMENT_SLOT_END + 2: // Remove Transmogrifications
             {
@@ -597,7 +572,7 @@ public:
                 }
                 else
                     ChatHandler(session).SendNotification(LANG_ERR_UNTRANSMOG_NO_TRANSMOGS);
-                OpenTransmogMenu(player, creature);
+                OnGossipHello(player, creature);
             } break;
             case EQUIPMENT_SLOT_END + 3: // Remove Transmogrification from single item
             {
@@ -609,7 +584,7 @@ public:
             {
                 if (!sT->GetEnableSets())
                 {
-                    OpenTransmogMenu(player, creature);
+                    OnGossipHello(player, creature);
                     return true;
                 }
                 if (sT->GetEnableSetInfo())
@@ -626,13 +601,13 @@ public:
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, saveSetText, EQUIPMENT_SLOT_END + 8, 0);
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
-                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
             } break;
             case EQUIPMENT_SLOT_END + 5: // Use preset
             {
                 if (!sT->GetEnableSets())
                 {
-                    OpenTransmogMenu(player, creature);
+                    OnGossipHello(player, creature);
                     return true;
                 }
                 // Charge Vote Points for applying a saved set
@@ -655,7 +630,7 @@ public:
             {
                 if (!sT->GetEnableSets())
                 {
-                    OpenTransmogMenu(player, creature);
+                    OnGossipHello(player, creature);
                     return true;
                 }
                 // action = presetID
@@ -672,13 +647,13 @@ public:
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, useSetText, EQUIPMENT_SLOT_END + 5, action, confirmSetText, 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|t" + GetLocaleText(locale, "delete_set"), EQUIPMENT_SLOT_END + 7, action, GetLocaleText(locale, "confirm_delete_set") + sT->presetByName[player->GetGUID()][action] + "?", 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
-                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
             } break;
             case EQUIPMENT_SLOT_END + 7: // Delete preset
             {
                 if (!sT->GetEnableSets())
                 {
-                    OpenTransmogMenu(player, creature);
+                    OnGossipHello(player, creature);
                     return true;
                 }
                 // action = presetID
@@ -693,7 +668,7 @@ public:
             {
                 if (!sT->GetEnableSets() || sT->presetByName[player->GetGUID()].size() >= sT->GetMaxSets())
                 {
-                    OpenTransmogMenu(player, creature);
+                    OnGossipHello(player, creature);
                     return true;
                 }
                 uint32 cost = 0;
@@ -736,7 +711,7 @@ public:
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), sender, action);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
-                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
             } break;
             case EQUIPMENT_SLOT_END + 10: // Set info
             {
@@ -753,7 +728,7 @@ public:
             {
                 if (!sender && !action)
                 {
-                    OpenTransmogMenu(player, creature);
+                    OnGossipHello(player, creature);
                     return true;
                 }
                 PerformTransmogrification(player, action, sender);
@@ -782,7 +757,7 @@ public:
             return true; // should never happen
         if (!sT->GetEnableSets())
         {
-            OpenTransmogMenu(player, creature);
+            OnGossipHello(player, creature);
             return true;
         }
         std::string name(code);
@@ -1011,7 +986,7 @@ public:
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
         }
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
-        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
     }
 
     static std::vector<ItemTemplate const*> GetSpoofedVendorItems (Item* target)
@@ -1416,50 +1391,6 @@ public:
     }
 };
 
-
-class spell_transmogrifier_portable : public SpellScript
-{
-    PrepareSpellScript(spell_transmogrifier_portable);
-
-    void HandleAfterCast()
-    {
-        Player* player = GetCaster() ? GetCaster()->ToPlayer() : nullptr;
-        if (!player)
-            return;
-
-        if (!sTransmogrification->IsEnabled())
-        {
-            ChatHandler(player->GetSession()).SendNotification("Transmogrification is disabled.");
-            return;
-        }
-
-        if (!sTransmogrification->IsPortableNPCEnabled)
-        {
-            ChatHandler(player->GetSession()).SendNotification("Portable transmogrification is disabled.");
-            return;
-        }
-
-        if (player->IsInCombat())
-        {
-            ChatHandler(player->GetSession()).SendNotification("You cannot use portable transmogrification while in combat.");
-            return;
-        }
-
-        if (!player->IsAlive())
-        {
-            ChatHandler(player->GetSession()).SendNotification("You cannot use portable transmogrification while dead.");
-            return;
-        }
-
-        npc_transmogrifier::OpenTransmogMenu(player, nullptr);
-    }
-
-    void Register() override
-    {
-        AfterCast += SpellCastFn(spell_transmogrifier_portable::HandleAfterCast);
-    }
-};
-
 void AddSC_Transmog()
 {
     new global_transmog_script();
@@ -1467,5 +1398,4 @@ void AddSC_Transmog()
     new npc_transmogrifier();
     new PS_Transmogrification();
     new WS_Transmogrification();
-    RegisterSpellScript(spell_transmogrifier_portable);
 }

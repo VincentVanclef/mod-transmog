@@ -287,12 +287,6 @@ public:
 
     static bool HandleTransmogPortableCommand(ChatHandler* handler)
     {
-        if (!sTransmogrification->IsPortableNPCEnabled)
-        {
-            handler->SendErrorMessage("The portable transmogrification NPC is disabled.");
-            return true;
-        }
-
         if (!sTransmogrification->IsTransmogPlusEnabled)
         {
             handler->SendErrorMessage("The portable transmogrification NPC is a plus feature. Plus features are currently disabled.");
