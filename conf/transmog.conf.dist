@@ -348,8 +348,7 @@ Transmogrification.SetCopperCost = 0
 #        Default:     ""
 #
 #    Transmogrification.PetSpellId
-#        Description: The spell ID used for portable transmogrification. This can be a summon spell or a custom dummy spell bound in spell_script_names to spell_transmogrifier_portable.
-#                     If you use a custom dummy spell and want the standard temporary npc_transmogrifier menu flow, set EffectMiscValue1 on that spell to the portable transmog creature entry.
+#        Description: The ID used by the transmog pet in the spell_dbc table
 #        Example:     Transmogrification.PetSpellId = 2000100
 #        Default:     2000100
 #
