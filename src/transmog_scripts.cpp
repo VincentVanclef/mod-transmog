@@ -1400,47 +1400,6 @@ public:
     }
 };
 
-class PlayerGossip_TransmogService final : public PlayerGossip
-{
-public:
-    enum Senders
-    {
-        ROOT = 1000
-    };
-
-    PlayerGossip_TransmogService() : PlayerGossip(91013)
-    {
-        RegisterAction(ROOT, OpenRoot);
-        for (int32 sender = 0; sender <= 255; ++sender)
-        {
-            RegisterAction(sender, DispatchSelect);
-            RegisterExtendedAction(sender, DispatchSelectCode);
-        }
-    }
-
-    static void OpenRoot(Player* player, int32, int32, std::any)
-    {
-        npc_transmogrifier script;
-        script.OnGossipHello(player, nullptr);
-    }
-
-    static void DispatchSelect(Player* player, int32 sender, int32 action, std::any)
-    {
-        npc_transmogrifier script;
-        script.OnGossipSelect(player, nullptr, uint32(sender), uint32(action));
-    }
-
-    static void DispatchSelectCode(Player* player, int32 sender, int32 action, std::string code, std::any)
-    {
-#ifdef PRESETS
-        npc_transmogrifier script;
-        script.OnGossipSelectCode(player, nullptr, uint32(sender), uint32(action), code.c_str());
-#else
-        (void)player; (void)sender; (void)action; (void)code;
-#endif
-    }
-};
-
 namespace RTG::Services::Transmog
 {
     bool Open(Player* player)
@@ -1450,8 +1409,9 @@ namespace RTG::Services::Transmog
 
         player->PlayerTalkClass->ClearMenus();
         CloseGossipMenuFor(player);
-        sPlayerGossipMgr->ShowGossipMenu(player, 91013, PlayerGossip_TransmogService::ROOT, 0);
-        return true;
+
+        npc_transmogrifier script;
+        return script.OnGossipHello(player, nullptr);
     }
 }
 
@@ -1462,5 +1422,4 @@ void AddSC_Transmog()
     new npc_transmogrifier();
     new PS_Transmogrification();
     new WS_Transmogrification();
-    new PlayerGossip_TransmogService();
 }
