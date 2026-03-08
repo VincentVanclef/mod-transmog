@@ -27,9 +27,17 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 #include "DatabaseEnv.h"
 #include "WorldPacket.h"
 #include "Opcodes.h"
+#include "PlayerGossip.h"
+#include "PlayerGossipMgr.h"
+#include <any>
 
 #define sT  sTransmogrification
 #define GTS session->GetAcoreString // dropped translation support, no one using?
+
+static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
+{
+    return creature ? creature->GetGUID() : player->GetGUID();
+}
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HOWWORKS = {
     {LOCALE_enUS, "How does transmogrification work?"},
@@ -518,7 +526,7 @@ public:
 #endif
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 2, 0, GetLocaleText(locale, "remove_transmog_ask"), 0, false);
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END + 1, 0);
-        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
         return true;
     }
 
@@ -540,8 +548,9 @@ public:
                 sT->selectionCache[player->GetGUID()] = action;
 
                 bool useVendorInterface = player->GetPlayerSetting("mod-transmog", SETTING_VENDOR_INTERFACE).IsEnabled();
+                bool allowVendorInterface = creature && (sT->GetUseVendorInterface() || useVendorInterface);
 
-                if (sT->GetUseVendorInterface() || useVendorInterface)
+                if (allowVendorInterface)
                     ShowTransmogItemsInFakeVendor(player, creature, action);
                 else
                     ShowTransmogItemsInGossipMenu(player, creature, action, sender);
@@ -601,7 +610,7 @@ public:
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, saveSetText, EQUIPMENT_SLOT_END + 8, 0);
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
-                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
             } break;
             case EQUIPMENT_SLOT_END + 5: // Use preset
             {
@@ -647,7 +656,7 @@ public:
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, useSetText, EQUIPMENT_SLOT_END + 5, action, confirmSetText, 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|t" + GetLocaleText(locale, "delete_set"), EQUIPMENT_SLOT_END + 7, action, GetLocaleText(locale, "confirm_delete_set") + sT->presetByName[player->GetGUID()][action] + "?", 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
-                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
             } break;
             case EQUIPMENT_SLOT_END + 7: // Delete preset
             {
@@ -711,18 +720,18 @@ public:
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), sender, action);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
-                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+                SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
             } break;
             case EQUIPMENT_SLOT_END + 10: // Set info
             {
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
-                SendGossipMenuFor(player, sT->GetSetNpcText(), creature->GetGUID());
+                SendGossipMenuFor(player, sT->GetSetNpcText(), GetTransmogMenuGuid(player, creature));
             } break;
     #endif
             case EQUIPMENT_SLOT_END + 9: // Transmog info
             {
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
-                SendGossipMenuFor(player, sT->GetTransmogNpcText(), creature->GetGUID());
+                SendGossipMenuFor(player, sT->GetTransmogNpcText(), GetTransmogMenuGuid(player, creature));
             } break;
             default: // Transmogrify
             {
@@ -986,7 +995,7 @@ public:
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
         }
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
-        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, creature->GetGUID());
+        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
     }
 
     static std::vector<ItemTemplate const*> GetSpoofedVendorItems (Item* target)
@@ -1391,6 +1400,61 @@ public:
     }
 };
 
+class PlayerGossip_TransmogService final : public PlayerGossip
+{
+public:
+    enum Senders
+    {
+        ROOT = 1000
+    };
+
+    PlayerGossip_TransmogService() : PlayerGossip(91013)
+    {
+        RegisterAction(ROOT, OpenRoot);
+        for (int32 sender = 0; sender <= 255; ++sender)
+        {
+            RegisterAction(sender, DispatchSelect);
+            RegisterExtendedAction(sender, DispatchSelectCode);
+        }
+    }
+
+    static void OpenRoot(Player* player, int32, int32, std::any)
+    {
+        npc_transmogrifier script;
+        script.OnGossipHello(player, nullptr);
+    }
+
+    static void DispatchSelect(Player* player, int32 sender, int32 action, std::any)
+    {
+        npc_transmogrifier script;
+        script.OnGossipSelect(player, nullptr, uint32(sender), uint32(action));
+    }
+
+    static void DispatchSelectCode(Player* player, int32 sender, int32 action, std::string code, std::any)
+    {
+#ifdef PRESETS
+        npc_transmogrifier script;
+        script.OnGossipSelectCode(player, nullptr, uint32(sender), uint32(action), code.c_str());
+#else
+        (void)player; (void)sender; (void)action; (void)code;
+#endif
+    }
+};
+
+namespace RTG::Services::Transmog
+{
+    bool Open(Player* player)
+    {
+        if (!player)
+            return false;
+
+        player->PlayerTalkClass->ClearMenus();
+        CloseGossipMenuFor(player);
+        sPlayerGossipMgr->ShowGossipMenu(player, 91013, PlayerGossip_TransmogService::ROOT, 0);
+        return true;
+    }
+}
+
 void AddSC_Transmog()
 {
     new global_transmog_script();
@@ -1398,4 +1462,5 @@ void AddSC_Transmog()
     new npc_transmogrifier();
     new PS_Transmogrification();
     new WS_Transmogrification();
+    new PlayerGossip_TransmogService();
 }
