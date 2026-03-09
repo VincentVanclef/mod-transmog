@@ -34,6 +34,11 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 #define sT  sTransmogrification
 #define GTS session->GetAcoreString // dropped translation support, no one using?
 
+
+static constexpr int32 TRANSMOG_GOSSIP_EXTENDED_BASE = 1000;
+static inline uint32 EncodeTransmogCodeSender(uint32 sender) { return sender + TRANSMOG_GOSSIP_EXTENDED_BASE; }
+static inline uint32 DecodeTransmogCodeSender(uint32 sender) { return sender >= uint32(TRANSMOG_GOSSIP_EXTENDED_BASE) ? sender - TRANSMOG_GOSSIP_EXTENDED_BASE : sender; }
+
 static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
 {
     return creature ? creature->GetGUID() : player->GetGUID();
@@ -716,7 +721,7 @@ public:
 
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
                         "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set"),
-                        0, 0, insertName, cost*sT->GetSetCostModifier() + sT->GetSetCopperCost(), true);
+                        EncodeTransmogCodeSender(0), 0, insertName, cost*sT->GetSetCostModifier() + sT->GetSetCopperCost(), true);
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), sender, action);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
@@ -751,6 +756,7 @@ public:
     bool OnGossipSelectCode(Player* player, Creature* creature, uint32 sender, uint32 action, const char* code) override
     {
         player->PlayerTalkClass->ClearMenus();
+        sender = DecodeTransmogCodeSender(sender);
         if (sender)
         {
             // "sender" is an equipment slot for a search - execute the search
@@ -880,11 +886,11 @@ public:
                 {
                     if (hasSearchString)
                     {
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "searching_for") + searchDisplayValue, slot + 1, 0, GetLocaleText(locale, "search_for_item"), 0, true);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "searching_for") + searchDisplayValue, EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
                     }
                     else
                     {
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "search"), slot + 1, 0, GetLocaleText(locale, "search_for_item"), 0, true);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "search"), EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
                     }
                 }
                 else
@@ -1400,6 +1406,46 @@ public:
     }
 };
 
+class PlayerGossip_TransmogService final : public PlayerGossip
+{
+public:
+    enum Senders
+    {
+        ROOT = 1000
+    };
+
+    PlayerGossip_TransmogService() : PlayerGossip(91013)
+    {
+        RegisterAction(ROOT, OpenRoot);
+        for (int32 sender = 0; sender <= 255; ++sender)
+            RegisterAction(sender, DispatchSelect);
+        for (int32 sender = TRANSMOG_GOSSIP_EXTENDED_BASE; sender <= TRANSMOG_GOSSIP_EXTENDED_BASE + 255; ++sender)
+            RegisterExtendedAction(sender, DispatchSelectCode);
+    }
+
+    static void OpenRoot(Player* player, int32, int32, std::any)
+    {
+        npc_transmogrifier script;
+        script.OnGossipHello(player, nullptr);
+    }
+
+    static void DispatchSelect(Player* player, int32 sender, int32 action, std::any)
+    {
+        npc_transmogrifier script;
+        script.OnGossipSelect(player, nullptr, uint32(sender), uint32(action));
+    }
+
+    static void DispatchSelectCode(Player* player, int32 sender, int32 action, std::string code, std::any)
+    {
+#ifdef PRESETS
+        npc_transmogrifier script;
+        script.OnGossipSelectCode(player, nullptr, uint32(sender), uint32(action), code.c_str());
+#else
+        (void)player; (void)sender; (void)action; (void)code;
+#endif
+    }
+};
+
 namespace RTG::Services::Transmog
 {
     bool Open(Player* player)
@@ -1410,8 +1456,8 @@ namespace RTG::Services::Transmog
         player->PlayerTalkClass->ClearMenus();
         CloseGossipMenuFor(player);
 
-        npc_transmogrifier script;
-        return script.OnGossipHello(player, nullptr);
+        sPlayerGossipMgr->ShowGossipMenu(player, 91013, PlayerGossip_TransmogService::ROOT, 0);
+        return true;
     }
 }
 
@@ -1422,4 +1468,5 @@ void AddSC_Transmog()
     new npc_transmogrifier();
     new PS_Transmogrification();
     new WS_Transmogrification();
+    new PlayerGossip_TransmogService();
 }
