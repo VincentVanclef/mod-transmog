@@ -1412,19 +1412,24 @@ public:
     enum Senders
     {
         ROOT = 1000,
-        EXTENDED_INPUT = 1001
-    };
-
-    struct TransmogCodeRequest
-    {
-        uint32 sender;
-        uint32 action;
+        EXTENDED_INPUT_BASE = 1000,
+        LEGACY_SENDER_MAX = 255,
+        EXTENDED_INPUT_MAX = 1100
     };
 
     PlayerGossip_TransmogService() : PlayerGossip(91013)
     {
         RegisterAction(ROOT, OpenRoot);
-        RegisterExtendedAction(EXTENDED_INPUT, DispatchSelectCode);
+
+        // Bridge the legacy npc_transmogrifier gossip senders into PlayerGossip so
+        // scoreboard and other player-opened entry points can reuse the original menu.
+        for (uint32 sender = 0; sender <= LEGACY_SENDER_MAX; ++sender)
+            RegisterAction(sender, DispatchSelect);
+
+    #ifdef PRESETS
+        for (uint32 sender = EXTENDED_INPUT_BASE; sender <= EXTENDED_INPUT_MAX; ++sender)
+            RegisterExtendedAction(sender, DispatchSelectCode);
+    #endif
     }
 
     static void OpenRoot(Player* player, int32, int32, std::any)
@@ -1433,21 +1438,16 @@ public:
         script.OnGossipHello(player, nullptr);
     }
 
-    static void DispatchSelectCode(Player* player, int32, int32, std::string code, std::any payload)
+    static void DispatchSelect(Player* player, int32 sender, int32 action, std::any)
     {
-    #ifdef PRESETS
         npc_transmogrifier script;
+        script.OnGossipSelect(player, nullptr, uint32(sender), uint32(action));
+    }
 
-        TransmogCodeRequest req { 0u, 0u };
-        if (payload.has_value())
-            req = std::any_cast<TransmogCodeRequest>(payload);
-
-        script.OnGossipSelectCode(player, nullptr, req.sender, req.action, code.c_str());
-    #else
-        (void)player;
-        (void)code;
-        (void)payload;
-    #endif
+    static void DispatchSelectCode(Player* player, int32 sender, int32 action, std::string code, std::any)
+    {
+        npc_transmogrifier script;
+        script.OnGossipSelectCode(player, nullptr, uint32(sender), uint32(action), code.c_str());
     }
 };
 
