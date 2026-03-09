@@ -1411,16 +1411,20 @@ class PlayerGossip_TransmogService final : public PlayerGossip
 public:
     enum Senders
     {
-        ROOT = 1000
+        ROOT = 1000,
+        EXTENDED_INPUT = 1001
+    };
+
+    struct TransmogCodeRequest
+    {
+        uint32 sender;
+        uint32 action;
     };
 
     PlayerGossip_TransmogService() : PlayerGossip(91013)
     {
         RegisterAction(ROOT, OpenRoot);
-        for (int32 sender = 0; sender <= 255; ++sender)
-            RegisterAction(sender, DispatchSelect);
-        for (int32 sender = TRANSMOG_GOSSIP_EXTENDED_BASE; sender <= TRANSMOG_GOSSIP_EXTENDED_BASE + 255; ++sender)
-            RegisterExtendedAction(sender, DispatchSelectCode);
+        RegisterExtendedAction(EXTENDED_INPUT, DispatchSelectCode);
     }
 
     static void OpenRoot(Player* player, int32, int32, std::any)
@@ -1429,20 +1433,21 @@ public:
         script.OnGossipHello(player, nullptr);
     }
 
-    static void DispatchSelect(Player* player, int32 sender, int32 action, std::any)
+    static void DispatchSelectCode(Player* player, int32, int32, std::string code, std::any payload)
     {
+    #ifdef PRESETS
         npc_transmogrifier script;
-        script.OnGossipSelect(player, nullptr, uint32(sender), uint32(action));
-    }
 
-    static void DispatchSelectCode(Player* player, int32 sender, int32 action, std::string code, std::any)
-    {
-#ifdef PRESETS
-        npc_transmogrifier script;
-        script.OnGossipSelectCode(player, nullptr, uint32(sender), uint32(action), code.c_str());
-#else
-        (void)player; (void)sender; (void)action; (void)code;
-#endif
+        TransmogCodeRequest req { 0u, 0u };
+        if (payload.has_value())
+            req = std::any_cast<TransmogCodeRequest>(payload);
+
+        script.OnGossipSelectCode(player, nullptr, req.sender, req.action, code.c_str());
+    #else
+        (void)player;
+        (void)code;
+        (void)payload;
+    #endif
     }
 };
 
