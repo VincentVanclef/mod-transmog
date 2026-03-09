@@ -35,7 +35,7 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 #define GTS session->GetAcoreString // dropped translation support, no one using?
 
 
-static constexpr int32 TRANSMOG_GOSSIP_EXTENDED_BASE = 1000;
+static constexpr int32 TRANSMOG_GOSSIP_EXTENDED_BASE = 1001;
 static inline uint32 EncodeTransmogCodeSender(uint32 sender) { return sender + TRANSMOG_GOSSIP_EXTENDED_BASE; }
 static inline uint32 DecodeTransmogCodeSender(uint32 sender) { return sender >= uint32(TRANSMOG_GOSSIP_EXTENDED_BASE) ? sender - TRANSMOG_GOSSIP_EXTENDED_BASE : sender; }
 
@@ -1412,9 +1412,9 @@ public:
     enum Senders
     {
         ROOT = 1000,
-        EXTENDED_INPUT_BASE = 1000,
-        LEGACY_SENDER_MAX = 255,
-        EXTENDED_INPUT_MAX = 1100
+		EXTENDED_INPUT_BASE = TRANSMOG_GOSSIP_EXTENDED_BASE,
+		LEGACY_SENDER_MAX = 255,
+		EXTENDED_INPUT_MAX = TRANSMOG_GOSSIP_EXTENDED_BASE + 100
     };
 
     PlayerGossip_TransmogService() : PlayerGossip(91013)
