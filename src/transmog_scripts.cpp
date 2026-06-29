@@ -445,10 +445,12 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
     return allowedItems;
 }
 
-void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 /*cost*/)
+bool PerformTransmogrification(Player* player, uint32 itemEntry, uint32 /*cost*/)
 {
     uint8 slot = sT->selectionCache[player->GetGUID()];
     WorldSession* session = player->GetSession();
+
+    bool freeReadyBefore = sT->HasFreeTransmogReady(player);
 
     // IMPORTANT:
     // Do NOT pre-check gold here.
@@ -457,9 +459,20 @@ void PerformTransmogrification (Player* player, uint32 itemEntry, uint32 /*cost*
     TransmogAcoreStrings res = sT->Transmogrify(player, itemEntry, slot);
 
     if (res == LANG_ERR_TRANSMOG_OK)
-        session->SendAreaTriggerMessage("{}", GTS(LANG_ERR_TRANSMOG_OK));
-    else
-        ChatHandler(session).SendNotification(res);
+    {
+        if (freeReadyBefore && !sT->HasFreeTransmogReady(player))
+        {
+            session->SendAreaTriggerMessage("Free transmog used! Next free use in {}.",
+                sT->FormatFreeTransmogCooldown(sT->GetFreeTransmogCooldownSeconds()));
+        }
+        else
+            session->SendAreaTriggerMessage("{}", GTS(LANG_ERR_TRANSMOG_OK));
+
+        return true;
+    }
+
+    ChatHandler(session).SendNotification(res);
+    return false;
 }
 
 void RemoveTransmogrification (Player* player)
@@ -512,6 +525,17 @@ public:
 
         // Clear the search string for the player
         sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
+
+        if (sT->GetFreeTransmogEnabled())
+        {
+            uint32 freeRemaining = sT->GetFreeTransmogCooldownRemaining(player);
+            std::string freeText = "|TInterface/ICONS/INV_Misc_Gift_01:30:30:-18:0|t";
+            if (freeRemaining == 0)
+                freeText += "|cff00ff00Free Transmog Ready|r";
+            else
+                freeText += "|cffffcc00Free Transmog: " + sT->FormatFreeTransmogCooldown(freeRemaining) + " cooldown|r";
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, freeText, EQUIPMENT_SLOT_END + 1, 0);
+        }
 
         if (sT->GetEnableTransmogInfo())
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Misc_Book_11:30:30:-18:0|t" + GetLocaleText(locale, "how_works"), EQUIPMENT_SLOT_END + 9, 0);
@@ -746,7 +770,7 @@ public:
                     return true;
                 }
                 PerformTransmogrification(player, action, sender);
-                CloseGossipMenuFor(player); // Wait for SetMoney to get fixed, issue #10053
+                OnGossipHello(player, creature);
             } break;
         }
         return true;
@@ -840,8 +864,7 @@ public:
                 break;
             }
         }
-        //OnGossipSelect(player, creature, EQUIPMENT_SLOT_END+4, 0);
-        CloseGossipMenuFor(player); // Wait for SetMoney to get fixed, issue #10053
+        OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
         return true;
     }
 #endif
@@ -867,9 +890,10 @@ public:
         if (oldItem)
         {
             uint32 price = GetTransmogPrice(oldItem->GetTemplate());
+            bool freeTransmogReady = sT->HasFreeTransmogReady(player);
             std::ostringstream ss;
             ss << std::endl;
-            if (sT->GetRequireToken())
+            if (sT->GetRequireToken() && !freeTransmogReady)
                 ss << std::endl << std::endl << sT->GetTokenAmount() << " x " << sT->GetItemLink(sT->GetTokenEntry(), session);
             std::string lineEnd = ss.str();
 
@@ -951,8 +975,15 @@ public:
                         };
 
                         uint32 boxMoney = price; // copper shown in UI (gold cost column)
+                        bool paidTransmog = sT->GetRequireToken() || price > 0;
 
-                        if (paymentType == 1)
+                        if (freeTransmogReady && paidTransmog)
+                        {
+                            boxMoney = 0;
+                            lineText += "  -  |cff00ff00FREE READY|r";
+                            confirmText += "\n\n|cff00ff00Your free 90-minute transmog use will be consumed.|r";
+                        }
+                        else if (paymentType == 1)
                         {
                             // VP-only: show no coin cost in the UI, display VP in the line text
                             boxMoney = 0;
@@ -1033,13 +1064,18 @@ public:
         return spoofedItems;
     }
 
-    static uint32 GetSpoofedItemPrice (uint32 itemId, ItemTemplate const* target)
+    static uint32 GetSpoofedItemPrice(Player* player, uint32 itemId, ItemTemplate const* target)
     {
         switch (itemId)
         {
             case CUSTOM_HIDE_ITEM_VENDOR_ID:
             case FALLBACK_HIDE_ITEM_VENDOR_ID:
-                return sT->HiddenTransmogIsFree ? 0 : sT->GetSpecialPrice(target);
+            {
+                uint32 hidePrice = sT->HiddenTransmogIsFree ? 0 : sT->GetSpecialPrice(target);
+                if (hidePrice > 0 && sT->HasFreeTransmogReady(player))
+                    return 0;
+                return hidePrice;
+            }
             default:
                 return 0;
         }
@@ -1077,6 +1113,8 @@ public:
         uint32 spoofCount = spoofedItems.size();
         uint32 totalItems = itemCount + spoofCount;
         uint32 price = GetTransmogPrice(targetItem->GetTemplate());
+        if (sT->HasFreeTransmogReady(player) && (sT->GetRequireToken() || price > 0))
+            price = 0;
 
         WorldPacket data(SMSG_LIST_INVENTORY, 8 + 1 + totalItems * 8 * 4);
         data << uint64(creature->GetGUID().GetRawValue());
@@ -1089,7 +1127,7 @@ public:
         {
             EncodeItemToPacket (
                 data, spoofedItems[i], count,
-                GetSpoofedItemPrice(spoofedItems[i]->ItemId, targetTemplate)
+                GetSpoofedItemPrice(player, spoofedItems[i]->ItemId, targetTemplate)
             );
         }
         for (uint32 i = 0; i < itemCount && count < MAX_VENDOR_ITEMS; ++i)

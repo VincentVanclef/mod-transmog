@@ -6,6 +6,7 @@
 #include "WorldSessionMgr.h"
 
 #include <cmath>
+#include <ctime>
 
 Transmogrification* Transmogrification::instance()
 {
@@ -564,11 +565,14 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
         cost *= ScaledCostModifier;
         cost += CopperCost;
 
-        if (!HiddenTransmogIsFree && cost)
+        bool shouldCharge = !HiddenTransmogIsFree && cost > 0;
+        bool useFreeTransmog = !no_cost && shouldCharge && HasFreeTransmogReady(player);
+
+        if (shouldCharge && !useFreeTransmog)
         {
             if (cost < 0)
-                LOG_DEBUG("module", "Transmogrification::Transmogrify - {} ({}) transmogrification invalid cost (non negative, amount {}). Transmogrified {} with {}",
-                    player->GetName(), player->GetGUID().ToString(), -cost, itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
+                LOG_DEBUG("module", "Transmogrification::Transmogrify - {} ({}) transmogrification invalid cost (non negative, amount {}). Transmogrified {} with hidden appearance",
+                    player->GetName(), player->GetGUID().ToString(), -cost, itemTransmogrified->GetEntry());
             else
             {
                 bool payGold = (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
@@ -590,6 +594,8 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
             }
         }
         SetFakeEntry(player, HIDDEN_ITEM_ID, slot, itemTransmogrified); // newEntry
+        if (useFreeTransmog)
+            MarkFreeTransmogUsed(player);
         return LANG_ERR_TRANSMOG_OK;
     }
 
@@ -606,42 +612,50 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
             return LANG_ERR_TRANSMOG_INVALID_ITEMS;
         }
 
+        bool useFreeTransmog = false;
         if (!no_cost)
         {
-            if (RequireToken)
-            {
-                if (player->HasItemCount(TokenEntry, TokenAmount))
-                    player->DestroyItemCount(TokenEntry, TokenAmount, true);
-                else
-                    return LANG_ERR_TRANSMOG_NOT_ENOUGH_TOKENS;
-            }
-
             cost = GetSpecialPrice(itemTransmogrified->GetTemplate());
             cost *= ScaledCostModifier;
             cost += CopperCost;
 
-            if (cost) // 0 cost if reverting look
+            bool paidCost = cost > 0;
+            bool wouldCharge = RequireToken || paidCost;
+            useFreeTransmog = wouldCharge && HasFreeTransmogReady(player);
+
+            if (!useFreeTransmog)
             {
-                if (cost < 0)
-                    LOG_DEBUG("module", "Transmogrification::Transmogrify - {} ({}) transmogrification invalid cost (non negative, amount {}). Transmogrified {} with {}",
-                        player->GetName(), player->GetGUID().ToString(), -cost, itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
-                else
+                if (RequireToken)
                 {
-                    bool payGold = (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
-                    bool payVP = (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+                    if (player->HasItemCount(TokenEntry, TokenAmount))
+                        player->DestroyItemCount(TokenEntry, TokenAmount, true);
+                    else
+                        return LANG_ERR_TRANSMOG_NOT_ENOUGH_TOKENS;
+                }
 
-                    if (payVP)
+                if (cost) // 0 cost if reverting look
+                {
+                    if (cost < 0)
+                        LOG_DEBUG("module", "Transmogrification::Transmogrify - {} ({}) transmogrification invalid cost (non negative, amount {}). Transmogrified {} with {}",
+                            player->GetName(), player->GetGUID().ToString(), -cost, itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
+                    else
                     {
-                        uint32 vpCost = calcVotePointsCost(cost);
-                        if (!trySpendVotePoints(vpCost))
-                            return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-                    }
+                        bool payGold = (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+                        bool payVP = (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
 
-                    if (payGold)
-                    {
-                        if (!player->HasEnoughMoney(cost))
-                            return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
-                        player->ModifyMoney(-cost, false);
+                        if (payVP)
+                        {
+                            uint32 vpCost = calcVotePointsCost(cost);
+                            if (!trySpendVotePoints(vpCost))
+                                return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
+                        }
+
+                        if (payGold)
+                        {
+                            if (!player->HasEnoughMoney(cost))
+                                return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
+                            player->ModifyMoney(-cost, false);
+                        }
                     }
                 }
             }
@@ -649,6 +663,8 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
 
         // Custom
         SetFakeEntry(player, itemTransmogrifier->GetEntry(), slot, itemTransmogrified); // newEntry
+        if (useFreeTransmog)
+            MarkFreeTransmogUsed(player);
 
         itemTransmogrified->UpdatePlayedTime(player);
 
@@ -1192,6 +1208,9 @@ void Transmogrification::LoadConfig(bool reload)
     VotePointsFlatCost = sConfigMgr->GetOption<uint32>("Transmogrification.VotePointsFlatCost", 0);
     VotePointsPerGold = sConfigMgr->GetOption<float>("Transmogrification.VotePointsPerGold", 0.0f);
 
+    FreeTransmogEnabled = sConfigMgr->GetOption<bool>("Transmogrification.FreeCooldown.Enable", true);
+    FreeTransmogCooldownSeconds = sConfigMgr->GetOption<uint32>("Transmogrification.FreeCooldown.Minutes", 90) * 60U;
+
     AllowPoor = sConfigMgr->GetOption<bool>("Transmogrification.AllowPoor", false);
     AllowCommon = sConfigMgr->GetOption<bool>("Transmogrification.AllowCommon", false);
     AllowUncommon = sConfigMgr->GetOption<bool>("Transmogrification.AllowUncommon", true);
@@ -1418,6 +1437,81 @@ bool Transmogrification::SpendVotePoints(Player* player, uint32 amount) const
     currency->ModifyVP(-static_cast<int32>(amount));
     return true;
 }
+
+bool Transmogrification::GetFreeTransmogEnabled() const
+{
+    return FreeTransmogEnabled;
+}
+
+uint32 Transmogrification::GetFreeTransmogCooldownSeconds() const
+{
+    return FreeTransmogCooldownSeconds;
+}
+
+uint32 Transmogrification::GetFreeTransmogCooldownRemaining(Player* player) const
+{
+    if (!FreeTransmogEnabled || !player)
+        return 0;
+
+    if (!FreeTransmogCooldownSeconds)
+        return 0;
+
+    QueryResult result = CharacterDatabase.Query("SELECT last_free_transmog_ts FROM custom_transmogrification_free_cooldown WHERE Owner = {} LIMIT 1", player->GetGUID().GetCounter());
+    if (!result)
+        return 0;
+
+    uint32 lastFreeUse = (*result)[0].Get<uint32>();
+    uint32 now = uint32(std::time(nullptr));
+    uint32 readyAt = lastFreeUse + FreeTransmogCooldownSeconds;
+
+    if (now >= readyAt)
+        return 0;
+
+    return readyAt - now;
+}
+
+bool Transmogrification::HasFreeTransmogReady(Player* player) const
+{
+    return FreeTransmogEnabled && player && GetFreeTransmogCooldownRemaining(player) == 0;
+}
+
+void Transmogrification::MarkFreeTransmogUsed(Player* player) const
+{
+    if (!FreeTransmogEnabled || !player)
+        return;
+
+    CharacterDatabase.Execute(
+        "REPLACE INTO custom_transmogrification_free_cooldown (Owner, last_free_transmog_ts) VALUES ({}, {})",
+        player->GetGUID().GetCounter(), uint32(std::time(nullptr)));
+}
+
+std::string Transmogrification::FormatFreeTransmogCooldown(uint32 seconds) const
+{
+    if (!seconds)
+        return "ready";
+
+    uint32 hours = seconds / 3600U;
+    uint32 minutes = (seconds % 3600U + 59U) / 60U;
+
+    if (minutes >= 60)
+    {
+        ++hours;
+        minutes = 0;
+    }
+
+    std::ostringstream os;
+    if (hours)
+    {
+        os << hours << "h";
+        if (minutes)
+            os << " " << minutes << "m";
+    }
+    else
+        os << minutes << "m";
+
+    return os.str();
+}
+
 bool Transmogrification::GetAllowMixedArmorTypes() const
 {
     return AllowMixedArmorTypes;

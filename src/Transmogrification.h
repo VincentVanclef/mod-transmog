@@ -234,6 +234,9 @@ public:
     bool IsTransmogEnabled;
     bool IsPortableNPCEnabled;
 
+    bool FreeTransmogEnabled;
+    uint32 FreeTransmogCooldownSeconds;
+
     bool IsAllowed(uint32 entry) const;
     bool IsNotAllowed(uint32 entry) const;
     bool IsAllowedQuality(uint32 quality, ObjectGuid const & playerGuid) const;
@@ -277,6 +280,13 @@ public:
     // Account Vote Points helpers (used by gossip/preset scripts)
     bool HasVotePoints(Player* player, uint32 amount) const;
     bool SpendVotePoints(Player* player, uint32 amount) const;
+
+    bool GetFreeTransmogEnabled() const;
+    uint32 GetFreeTransmogCooldownSeconds() const;
+    uint32 GetFreeTransmogCooldownRemaining(Player* player) const;
+    bool HasFreeTransmogReady(Player* player) const;
+    void MarkFreeTransmogUsed(Player* player) const;
+    std::string FormatFreeTransmogCooldown(uint32 seconds) const;
 
     bool GetAllowMixedArmorTypes() const;
     bool GetAllowLowerTiers() const;

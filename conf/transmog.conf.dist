@@ -158,6 +158,22 @@ Transmogrification.VotePointsFlatCost = 0
 Transmogrification.VotePointsPerGold = 0.0
 
 #
+#    FREE TRANSMOG COOLDOWN
+#
+#    Transmogrification.FreeCooldown.Enable
+#        Description: Gives each character one paid transmog execution for free when their cooldown is ready.
+#                     A free use skips the configured token/gold/vote-point cost for that one item.
+#        Default:     1
+#
+#    Transmogrification.FreeCooldown.Minutes
+#        Description: Cooldown in minutes before that character earns another free paid transmog execution.
+#        Default:     90
+#
+
+Transmogrification.FreeCooldown.Enable = 1
+Transmogrification.FreeCooldown.Minutes = 90
+
+#
 # Vote Point costs for transmog sets
 #
 Transmogrification.SetSaveVotePoints = 20
