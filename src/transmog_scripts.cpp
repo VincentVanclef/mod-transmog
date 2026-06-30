@@ -39,6 +39,20 @@ static constexpr int32 TRANSMOG_GOSSIP_EXTENDED_BASE = 1001;
 static inline uint32 EncodeTransmogCodeSender(uint32 sender) { return sender + TRANSMOG_GOSSIP_EXTENDED_BASE; }
 static inline uint32 DecodeTransmogCodeSender(uint32 sender) { return sender >= uint32(TRANSMOG_GOSSIP_EXTENDED_BASE) ? sender - TRANSMOG_GOSSIP_EXTENDED_BASE : sender; }
 
+static constexpr uint32 RTG_SCOREBOARD_MENU_ID = 10000;
+static constexpr uint32 RTG_SCOREBOARD_MAIN_MENU_SENDER = 1;
+static constexpr uint32 TRANSMOG_SCOREBOARD_RETURN_SENDER = 250;
+
+static void OpenRTGScoreboardMainMenu(Player* player)
+{
+    if (!player)
+        return;
+
+    player->PlayerTalkClass->ClearMenus();
+    CloseGossipMenuFor(player);
+    sPlayerGossipMgr->ShowGossipMenu(player, RTG_SCOREBOARD_MENU_ID, RTG_SCOREBOARD_MAIN_MENU_SENDER, 0);
+}
+
 static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
 {
     return creature ? creature->GetGUID() : player->GetGUID();
@@ -138,6 +152,18 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK = {
     {LOCALE_esES, "Atrás..."},
     {LOCALE_esMX, "Atrás..."},
     {LOCALE_ruRU, "Назад..."}
+};
+
+const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK_TO_SCOREBOARD = {
+    {LOCALE_enUS, "Back to Main Scoreboard"},
+    {LOCALE_koKR, "Back to Main Scoreboard"},
+    {LOCALE_frFR, "Back to Main Scoreboard"},
+    {LOCALE_deDE, "Back to Main Scoreboard"},
+    {LOCALE_zhCN, "Back to Main Scoreboard"},
+    {LOCALE_zhTW, "Back to Main Scoreboard"},
+    {LOCALE_esES, "Back to Main Scoreboard"},
+    {LOCALE_esMX, "Back to Main Scoreboard"},
+    {LOCALE_ruRU, "Back to Main Scoreboard"}
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_USESET = {
@@ -329,6 +355,7 @@ std::unordered_map<std::string, const std::unordered_map<LocaleConstant, std::st
     {"how_sets_work", &TRANSMOG_TEXT_HOWSETSWORK},
     {"save_set", &TRANSMOG_TEXT_SAVESET},
     {"back", &TRANSMOG_TEXT_BACK},
+    {"back_to_scoreboard", &TRANSMOG_TEXT_BACK_TO_SCOREBOARD},
     {"use_set", &TRANSMOG_TEXT_USESET},
     {"confirm_use_set", &TRANSMOG_TEXT_CONFIRM_USESET},
     {"delete_set", &TRANSMOG_TEXT_DELETESET},
@@ -526,6 +553,10 @@ public:
         // Clear the search string for the player
         sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
 
+        // Scoreboard-opened transmog has no creature context, so give players a direct return path.
+        if (!creature)
+            AddGossipItemFor(player, GOSSIP_ICON_TALK, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t |cff3b2a1a" + GetLocaleText(locale, "back_to_scoreboard") + "|r", TRANSMOG_SCOREBOARD_RETURN_SENDER, 0);
+
         if (sT->GetFreeTransmogEnabled())
         {
             uint32 freeRemaining = sT->GetFreeTransmogCooldownRemaining(player);
@@ -564,6 +595,13 @@ public:
         player->PlayerTalkClass->ClearMenus();
         WorldSession* session = player->GetSession();
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
+
+        if (sender == TRANSMOG_SCOREBOARD_RETURN_SENDER)
+        {
+            OpenRTGScoreboardMainMenu(player);
+            return true;
+        }
+
         // Next page
         if (sender > EQUIPMENT_SLOT_END + 10)
         {
