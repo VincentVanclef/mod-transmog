@@ -470,9 +470,22 @@ void Transmogrification::DeleteFakeEntry(Player* player, uint8 /*slot*/, Item* i
 void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified)
 {
     ObjectGuid itemGUID = itemTransmogrified->GetGUID();
-    entryMap[player->GetGUID()][itemGUID] = newEntry;
-    dataMap[itemGUID] = player->GetGUID();
-    CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, player->GetGUID().GetCounter());
+    ObjectGuid playerGUID = player->GetGUID();
+
+    // Replacing a transmog should be a single direct operation. Clean any stale
+    // in-memory owner mapping first, then overwrite the appearance in both cache
+    // and database. Players never need to remove the old transmog manually.
+    auto dataItr = dataMap.find(itemGUID);
+    if (dataItr != dataMap.end())
+    {
+        auto ownerItr = entryMap.find(dataItr->second);
+        if (ownerItr != entryMap.end())
+            ownerItr->second.erase(itemGUID);
+    }
+
+    entryMap[playerGUID][itemGUID] = newEntry;
+    dataMap[itemGUID] = playerGUID;
+    CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
     UpdateItem(player, itemTransmogrified);
 }
 

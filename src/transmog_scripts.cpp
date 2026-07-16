@@ -407,8 +407,11 @@ bool ValidForTransmog (Player* player, Item* target, Item* source, bool hasSearc
 
     if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
         return false;
-    if (sT->GetFakeEntry(target->GetGUID()) == source->GetEntry())
-        return false;
+
+    // Keep the currently-applied appearance in the browser. This makes it clear that
+    // an already-transmogrified slot can still be opened and replaced directly.
+    // PerformTransmogrification() treats selecting the current appearance as a no-op,
+    // so the player is never charged for simply clicking it again.
     if (hasSearch && sourceTemplate->Name1.find(searchTerm) == std::string::npos)
         return false;
     return true;
@@ -476,6 +479,20 @@ bool PerformTransmogrification(Player* player, uint32 itemEntry, uint32 /*cost*/
 {
     uint8 slot = sT->selectionCache[player->GetGUID()];
     WorldSession* session = player->GetSession();
+
+    Item* targetItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    if (!targetItem)
+    {
+        ChatHandler(session).SendNotification(LANG_ERR_TRANSMOG_MISSING_DEST_ITEM);
+        return false;
+    }
+
+    uint32 existingTransmog = sT->GetFakeEntry(targetItem->GetGUID());
+    if (existingTransmog == itemEntry)
+    {
+        session->SendAreaTriggerMessage("That appearance is already applied. Choose another appearance to replace it.");
+        return true;
+    }
 
     bool freeReadyBefore = sT->HasFreeTransmogReady(player);
 
@@ -576,8 +593,11 @@ public:
             {
                 Item* newItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
                 uint32 entry = newItem ? sT->GetFakeEntry(newItem->GetGUID()) : 0;
-                std::string icon = entry ? sT->GetItemIcon(entry, 30, 30, -18, 0) : sT->GetSlotIcon(slot, 30, 30, -18, 0);
-                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, icon + std::string(slotName), EQUIPMENT_SLOT_END, slot);
+                std::string icon = entry && entry != HIDDEN_ITEM_ID ? sT->GetItemIcon(entry, 30, 30, -18, 0) : sT->GetSlotIcon(slot, 30, 30, -18, 0);
+                std::string slotText = icon + std::string(slotName);
+                if (entry)
+                    slotText += " |cff00ff00- Select to replace current appearance|r";
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, slotText, EQUIPMENT_SLOT_END, slot);
             }
         }
 #ifdef PRESETS
@@ -927,6 +947,7 @@ public:
 
         if (oldItem)
         {
+            uint32 existingTransmog = sT->GetFakeEntry(oldItem->GetGUID());
             uint32 price = GetTransmogPrice(oldItem->GetTemplate());
             bool freeTransmogReady = sT->HasFreeTransmogReady(player);
             std::ostringstream ss;
@@ -959,9 +980,10 @@ public:
                 {
                     startValue--;
                 }
-                if (sT->GetAllowHiddenTransmog())
+                if (sT->GetAllowHiddenTransmog() && existingTransmog != HIDDEN_ITEM_ID)
                 {
-                    // Offset the start and end values to make space for invisible item entry
+                    // Offset the start and end values to make space for invisible item entry.
+                    // Hiding can replace an existing visible transmog without removing it first.
                     endValue--;
                     if (pageNumber != 0)
                     {
@@ -970,7 +992,10 @@ public:
                     else
                     {
                         // Add invisible item entry
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|t" + GetLocaleText(locale, "hide_slot"), slot, UINT_MAX, GetLocaleText(locale, "confirm_hide_item") + lineEnd, 0, false);
+                        std::string hideConfirm = GetLocaleText(locale, "confirm_hide_item") + lineEnd;
+                        if (existingTransmog)
+                            hideConfirm += "\n\n|cffffcc00This will replace the currently applied appearance.|r";
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|t" + GetLocaleText(locale, "hide_slot"), slot, UINT_MAX, hideConfirm, 0, false);
                     }
                 }
                 for (uint32 i = startValue; i <= endValue; i++)
@@ -1004,6 +1029,15 @@ public:
                         std::string lineText = sT->GetItemIcon(newItem->GetEntry(), 30, 30, -18, 0) + sT->GetItemLink(newItem, session);
                         std::string confirmText = GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->GetEntry(), 40, 40, -15, -10) + sT->GetItemLink(newItem, session) + lineEnd;
 
+                        bool isCurrentAppearance = existingTransmog == newItem->GetEntry();
+                        if (isCurrentAppearance)
+                        {
+                            lineText += "  |cff00ff00(Currently Applied)|r";
+                            confirmText += "\n\n|cff00ff00This appearance is already applied. You will not be charged.|r";
+                        }
+                        else if (existingTransmog)
+                            confirmText += "\n\n|cffffcc00This will replace the currently applied appearance.|r";
+
                         // Colored VP text
                         auto vpText = [&](uint32 vp) -> std::string
                         {
@@ -1012,16 +1046,16 @@ public:
                             return os.str();
                         };
 
-                        uint32 boxMoney = price; // copper shown in UI (gold cost column)
+                        uint32 boxMoney = isCurrentAppearance ? 0u : price; // copper shown in UI (gold cost column)
                         bool paidTransmog = sT->GetRequireToken() || price > 0;
 
-                        if (freeTransmogReady && paidTransmog)
+                        if (!isCurrentAppearance && freeTransmogReady && paidTransmog)
                         {
                             boxMoney = 0;
                             lineText += "  -  |cff00ff00FREE READY|r";
                             confirmText += "\n\n|cff00ff00Your free 90-minute transmog use will be consumed.|r";
                         }
-                        else if (paymentType == 1)
+                        else if (!isCurrentAppearance && paymentType == 1)
                         {
                             // VP-only: show no coin cost in the UI, display VP in the line text
                             boxMoney = 0;
@@ -1031,7 +1065,7 @@ public:
                                 confirmText += "\n\nCost: " + vpText(vpCost);
                             }
                         }
-                        else if (paymentType == 2)
+                        else if (!isCurrentAppearance && paymentType == 2)
                         {
                             // Gold + VP: keep coin cost in UI, append VP to the line text
                             if (vpCost > 0)
@@ -1066,7 +1100,8 @@ public:
                 AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Next Page", EQUIPMENT_SLOT_END + 11, slot);
             }
 
-            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 3, slot, GetLocaleText(locale, "remove_transmog_slot"), 0, false);
+            if (existingTransmog)
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 3, slot, GetLocaleText(locale, "remove_transmog_slot"), 0, false);
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
         }
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
@@ -1077,7 +1112,9 @@ public:
     {
         std::vector<ItemTemplate const*> spoofedItems;
         uint32 existingTransmog = sT->GetFakeEntry(target->GetGUID());
-        if (sT->AllowHiddenTransmog && !existingTransmog)
+        // Hidden appearance can replace a visible transmog directly. Only suppress the
+        // button when the slot is already hidden.
+        if (sT->AllowHiddenTransmog && existingTransmog != HIDDEN_ITEM_ID)
         {
             ItemTemplate const* _hideSlotButton = sObjectMgr->GetItemTemplate(CUSTOM_HIDE_ITEM_VENDOR_ID);
             if (_hideSlotButton)
@@ -1168,10 +1205,15 @@ public:
                 GetSpoofedItemPrice(player, spoofedItems[i]->ItemId, targetTemplate)
             );
         }
+        uint32 existingTransmog = sT->GetFakeEntry(targetItem->GetGUID());
         for (uint32 i = 0; i < itemCount && count < MAX_VENDOR_ITEMS; ++i)
         {
             ItemTemplate const* _proto = itemList[i]->GetTemplate();
-            if (_proto) EncodeItemToPacket(data, _proto, count, price);
+            if (_proto)
+            {
+                uint32 itemPrice = _proto->ItemId == existingTransmog ? 0u : price;
+                EncodeItemToPacket(data, _proto, count, itemPrice);
+            }
         }
 
         data.put(count_pos, count);
