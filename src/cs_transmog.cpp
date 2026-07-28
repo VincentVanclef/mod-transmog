@@ -29,7 +29,7 @@ using namespace Acore::ChatCommands;
 namespace RTG::Services::Transmog
 {
     bool Open(Player* player);
-    bool OpenSlot(Player* player, uint8 slot);
+    bool OpenSlot(Player* player, uint8 inventorySlot);
 }
 
 class transmog_commandscript : public CommandScript
@@ -59,7 +59,8 @@ public:
 
         static ChatCommandTable commandTable =
         {
-            { "transmog", transmogTable },
+            { "rtgtransmogslot", HandleTransmogSlotCommand, SEC_PLAYER, Console::No },
+            { "transmog",        transmogTable },
         };
 
         return commandTable;
@@ -293,6 +294,40 @@ public:
         return true;
     }
 
+    static bool HandleTransmogMenuCommand(ChatHandler* handler)
+    {
+        Player* player = handler ? handler->GetPlayer() : nullptr;
+        if (!player || !RTG::Services::Transmog::Open(player))
+        {
+            if (handler)
+                handler->SendErrorMessage("Transmogrification is not available right now.");
+            return true;
+        }
+
+        return true;
+    }
+
+    static bool HandleTransmogSlotCommand(ChatHandler* handler, uint32 inventorySlot)
+    {
+        Player* player = handler ? handler->GetPlayer() : nullptr;
+        if (!player)
+            return false;
+
+        if (inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
+        {
+            handler->SendErrorMessage("Choose an equipped inventory slot from 1 through 19.");
+            return true;
+        }
+
+        if (!RTG::Services::Transmog::OpenSlot(player, uint8(inventorySlot)))
+        {
+            handler->SendErrorMessage("That slot is not equipped or cannot be transmogrified.");
+            return true;
+        }
+
+        return true;
+    }
+
     static bool HandleTransmogPortableCommand(ChatHandler* handler)
     {
         if (!sTransmogrification->IsTransmogPlusEnabled)
@@ -318,37 +353,6 @@ public:
         player->CastSpell((Unit*)nullptr, sTransmogrification->PetSpellId, true);
         return true;
     };
-
-    static bool HandleTransmogMenuCommand(ChatHandler* handler)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Open(player))
-        {
-            if (handler)
-                handler->SendErrorMessage("The transmog menu could not be opened.");
-            return true;
-        }
-
-        return true;
-    }
-
-    static bool HandleTransmogSlotCommand(ChatHandler* handler, uint32 slot)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player)
-            return true;
-
-        if (slot >= EQUIPMENT_SLOT_END || !sTransmogrification->GetSlotName(uint8(slot), player->GetSession()))
-        {
-            handler->SendErrorMessage("That equipment slot is not available for transmogrification.");
-            return true;
-        }
-
-        if (!RTG::Services::Transmog::OpenSlot(player, uint8(slot)))
-            handler->SendErrorMessage("The requested transmog slot could not be opened.");
-
-        return true;
-    }
 
     static bool HandleInterfaceOption(ChatHandler* handler, bool enable)
     {
