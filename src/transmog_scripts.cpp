@@ -42,6 +42,14 @@ static inline uint32 DecodeTransmogCodeSender(uint32 sender) { return sender >= 
 static constexpr uint32 RTG_SCOREBOARD_MENU_ID = 10000;
 static constexpr uint32 RTG_SCOREBOARD_MAIN_MENU_SENDER = 1;
 static constexpr uint32 TRANSMOG_SCOREBOARD_RETURN_SENDER = 250;
+static constexpr uint32 TRANSMOG_SCOREBOARD_SLOT_CONTEXT_SENDER = 251;
+
+// The transmog module owns the currently opened portable slot.  Scoreboard is
+// only a renderer and must not reconstruct the legacy gossip path or cache the
+// server's sender/action values.  This context is intentionally short-lived:
+// opening the root menu clears it, while paging/searching inside the same slot
+// preserves it so every returned page identifies its real equipment slot.
+static std::unordered_map<uint32, uint8> sRtgPortableSlotContext;
 
 static void OpenRTGScoreboardMainMenu(Player* player)
 {
@@ -569,6 +577,7 @@ public:
 
         // Clear the search string for the player
         sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
+        sRtgPortableSlotContext.erase(player->GetGUID().GetCounter());
 
         // Scoreboard-opened transmog has no creature context, so give players a direct return path.
         if (!creature)
@@ -610,6 +619,22 @@ public:
         return true;
     }
 
+    bool OpenPortableSlot(Player* player, Creature* creature, uint8 slot)
+    {
+        if (!player || slot >= EQUIPMENT_SLOT_END)
+            return false;
+
+        WorldSession* session = player->GetSession();
+        if (!session || !sT->GetSlotName(slot, session))
+            return false;
+
+        player->PlayerTalkClass->ClearMenus();
+        sT->selectionCache[player->GetGUID()] = slot;
+        sRtgPortableSlotContext[player->GetGUID().GetCounter()] = slot;
+        ShowTransmogItemsInGossipMenu(player, creature, slot, EQUIPMENT_SLOT_END);
+        return true;
+    }
+
     bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action) override
     {
         player->PlayerTalkClass->ClearMenus();
@@ -619,6 +644,12 @@ public:
         if (sender == TRANSMOG_SCOREBOARD_RETURN_SENDER)
         {
             OpenRTGScoreboardMainMenu(player);
+            return true;
+        }
+
+        if (sender == TRANSMOG_SCOREBOARD_SLOT_CONTEXT_SENDER)
+        {
+            OpenPortableSlot(player, creature, uint8(action));
             return true;
         }
 
@@ -933,6 +964,16 @@ public:
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
         Item* oldItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
         bool hasSearchString;
+
+        auto portableContext = sRtgPortableSlotContext.find(player->GetGUID().GetCounter());
+        if (portableContext != sRtgPortableSlotContext.end() && portableContext->second == slot)
+        {
+            std::string slotName = sT->GetSlotName(slot, session) ? sT->GetSlotName(slot, session) : "Unknown";
+            AddGossipItemFor(player, GOSSIP_ICON_DOT,
+                "|TInterface/ICONS/INV_Chest_Cloth_17:30:30:-18:0|t |cffffcc00RTG Transmog Slot: " +
+                    std::to_string(uint32(slot)) + " - " + slotName + "|r",
+                TRANSMOG_SCOREBOARD_SLOT_CONTEXT_SENDER, slot);
+        }
 
         uint16 pageNumber = 0;
         uint32 startValue = 0;
@@ -1408,6 +1449,7 @@ public:
             sT->dataMap.erase(it->first);
         sT->entryMap.erase(pGUID);
         sT->selectionCache.erase(pGUID);
+        sRtgPortableSlotContext.erase(pGUID.GetCounter());
 
 #ifdef PRESETS
         if (sT->GetEnableSets())
@@ -1581,6 +1623,18 @@ namespace RTG::Services::Transmog
 
         sPlayerGossipMgr->ShowGossipMenu(player, 91013, PlayerGossip_TransmogService::ROOT, 0);
         return true;
+    }
+
+    bool OpenSlot(Player* player, uint8 slot)
+    {
+        if (!player)
+            return false;
+
+        player->PlayerTalkClass->ClearMenus();
+        CloseGossipMenuFor(player);
+
+        npc_transmogrifier script;
+        return script.OpenPortableSlot(player, nullptr, slot);
     }
 }
 

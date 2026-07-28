@@ -26,6 +26,12 @@
 
 using namespace Acore::ChatCommands;
 
+namespace RTG::Services::Transmog
+{
+    bool Open(Player* player);
+    bool OpenSlot(Player* player, uint8 slot);
+}
+
 class transmog_commandscript : public CommandScript
 {
 public:
@@ -44,6 +50,8 @@ public:
             { "add",       addCollectionTable                                            },
             { "",          HandleDisableTransMogVisual,   SEC_PLAYER,        Console::No },
             { "sync",      HandleSyncTransMogCommand,     SEC_PLAYER,        Console::No },
+            { "menu",      HandleTransmogMenuCommand,     SEC_PLAYER,        Console::No },
+            { "slot",      HandleTransmogSlotCommand,     SEC_PLAYER,        Console::No },
             { "portable",  HandleTransmogPortableCommand, SEC_PLAYER,        Console::No },
             { "interface", HandleInterfaceOption,         SEC_PLAYER,        Console::No },
             { "reload",    HandleReloadTransmogConfig,    SEC_ADMINISTRATOR, Console::Yes}
@@ -310,6 +318,37 @@ public:
         player->CastSpell((Unit*)nullptr, sTransmogrification->PetSpellId, true);
         return true;
     };
+
+    static bool HandleTransmogMenuCommand(ChatHandler* handler)
+    {
+        Player* player = handler ? handler->GetPlayer() : nullptr;
+        if (!player || !RTG::Services::Transmog::Open(player))
+        {
+            if (handler)
+                handler->SendErrorMessage("The transmog menu could not be opened.");
+            return true;
+        }
+
+        return true;
+    }
+
+    static bool HandleTransmogSlotCommand(ChatHandler* handler, uint32 slot)
+    {
+        Player* player = handler ? handler->GetPlayer() : nullptr;
+        if (!player)
+            return true;
+
+        if (slot >= EQUIPMENT_SLOT_END || !sTransmogrification->GetSlotName(uint8(slot), player->GetSession()))
+        {
+            handler->SendErrorMessage("That equipment slot is not available for transmogrification.");
+            return true;
+        }
+
+        if (!RTG::Services::Transmog::OpenSlot(player, uint8(slot)))
+            handler->SendErrorMessage("The requested transmog slot could not be opened.");
+
+        return true;
+    }
 
     static bool HandleInterfaceOption(ChatHandler* handler, bool enable)
     {
