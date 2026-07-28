@@ -1109,6 +1109,10 @@ public:
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
         }
         std::string backText = "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back");
+        // Player-owned portable pages are asynchronous. RTG_Core reads this raw
+        // slot marker to reject stale/mismatched responses, then strips it from
+        // every visible label and dropdown row. Keep it on the return row so an
+        // otherwise empty slot page can still be matched safely.
         if (!creature)
             backText += " |cff010101[RTGTSLOT:" + std::to_string(uint32(slot + 1)) + "]|r";
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, backText, EQUIPMENT_SLOT_END + 1, 0);
