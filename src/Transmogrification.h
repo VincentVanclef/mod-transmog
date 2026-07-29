@@ -236,6 +236,9 @@ public:
 
     bool FreeTransmogEnabled;
     uint32 FreeTransmogCooldownSeconds;
+    // Mirrors timestamps written through asynchronous CharacterDatabase
+    // execution so back-to-back gossip packets cannot consume two free uses.
+    mutable std::unordered_map<uint32, uint32> PendingFreeTransmogUseByGuid;
 
     bool IsAllowed(uint32 entry) const;
     bool IsNotAllowed(uint32 entry) const;

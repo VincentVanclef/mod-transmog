@@ -20,6 +20,8 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 -- Cant think of any good way to handle this easily, could rip flagged items from cata DB
 */
 #include <algorithm>
+#include <cmath>
+#include <limits>
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
@@ -403,13 +405,55 @@ std::string GetLocaleText(LocaleConstant locale, const std::string& titleType) {
     return "";
 }
 
-uint32 GetTransmogPrice (ItemTemplate const* targetItem)
+uint32 GetTransmogPrice(ItemTemplate const* targetItem)
 {
-    uint32 price = sT->GetSpecialPrice(targetItem);
-    price *= sT->GetScaledCostModifier();
-    price += sT->GetCopperCost();
-    return price;
+    if (!targetItem)
+        return 0;
+
+    double const scaled = double(sT->GetSpecialPrice(targetItem)) * double(sT->GetScaledCostModifier());
+    if (!std::isfinite(scaled))
+        return uint32(std::numeric_limits<int32>::max());
+
+    double const total = scaled + double(sT->GetCopperCost());
+    if (total <= 0.0)
+        return 0;
+    if (total >= double(std::numeric_limits<int32>::max()))
+        return uint32(std::numeric_limits<int32>::max());
+    return uint32(total);
 }
+
+uint32 GetTransmogVotePointPrice(uint32 copperPrice)
+{
+    if (!copperPrice)
+        return 0;
+
+    uint64 const maximumCharge = uint64(std::numeric_limits<int32>::max());
+    uint64 const flat = std::min<uint64>(sT->GetVotePointsFlatCost(), maximumCharge);
+    float const perGold = sT->GetVotePointsPerGold();
+    if (!std::isfinite(perGold) || perGold <= 0.0f)
+        return uint32(flat);
+
+    double const scaled = std::ceil((double(copperPrice) / 10000.0) * double(perGold));
+    if (!std::isfinite(scaled) || scaled >= double(maximumCharge - flat))
+        return uint32(maximumCharge);
+    return uint32(flat + uint64(std::max(0.0, scaled)));
+}
+
+#ifdef PRESETS
+int32 GetTransmogSetPrice(uint64 baseCopper)
+{
+    double const scaled = double(baseCopper) * double(sT->GetSetCostModifier());
+    if (!std::isfinite(scaled))
+        return std::numeric_limits<int32>::max();
+
+    double const total = scaled + double(sT->GetSetCopperCost());
+    if (total <= 0.0)
+        return 0;
+    if (total >= double(std::numeric_limits<int32>::max()))
+        return std::numeric_limits<int32>::max();
+    return int32(total);
+}
+#endif
 
 bool ValidForTransmog (Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate, bool hasSearch, std::string const& searchTerm)
 {
@@ -761,20 +805,64 @@ public:
                     OnGossipHello(player, creature);
                     return true;
                 }
-                // Charge Vote Points for applying a saved set
-                uint32 vpApplyCost = sT->GetSetApplyVotePoints();
+                if (action >= sT->GetMaxSets())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set is invalid. No Vote Points were spent.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                auto ownerItr = sT->presetById.find(player->GetGUID());
+                if (ownerItr == sT->presetById.end())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists. No Vote Points were spent.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                auto presetItr = ownerItr->second.find(uint8(action));
+                if (presetItr == ownerItr->second.end())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists. No Vote Points were spent.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                struct PendingPresetAppearance
+                {
+                    Item* item = nullptr;
+                    uint32 entry = 0;
+                    uint8 slot = 0;
+                };
+                std::vector<PendingPresetAppearance> pending;
+                for (auto const& [savedSlot, savedEntry] : presetItr->second)
+                {
+                    Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, savedSlot);
+                    ItemTemplate const* source = savedEntry == HIDDEN_ITEM_ID ? nullptr : sObjectMgr->GetItemTemplate(savedEntry);
+                    if (!item || (savedEntry == HIDDEN_ITEM_ID && !sT->GetAllowHiddenTransmog())
+                        || (savedEntry != HIDDEN_ITEM_ID
+                            && (!source || !sT->CanTransmogrifyItemWithItem(player, item->GetTemplate(), source))))
+                        continue;
+                    pending.push_back({ item, savedEntry, savedSlot });
+                }
+
+                if (pending.empty())
+                {
+                    ChatHandler(session).SendSysMessage("None of that set's saved appearances can be applied to your currently equipped items. No Vote Points were spent.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+                    return true;
+                }
+
+                uint32 const vpApplyCost = sT->GetSetApplyVotePoints();
                 if (vpApplyCost && !sT->SpendVotePoints(player, vpApplyCost))
                 {
                     ChatHandler(session).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
                     return true;
                 }
-                // action = presetID
-                for (Transmogrification::slotMap::const_iterator it = sT->presetById[player->GetGUID()][action].begin(); it != sT->presetById[player->GetGUID()][action].end(); ++it)
-                {
-                    if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, it->first))
-                        sT->PresetTransmog(player, item, it->second, it->first);
-                }
+
+                for (PendingPresetAppearance const& appearance : pending)
+                    sT->PresetTransmog(player, appearance.item, appearance.entry, appearance.slot);
                 OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
             } break;
             case EQUIPMENT_SLOT_END + 6: // view preset
@@ -784,19 +872,43 @@ public:
                     OnGossipHello(player, creature);
                     return true;
                 }
-                // action = presetID
-                for (Transmogrification::slotMap::const_iterator it = sT->presetById[player->GetGUID()][action].begin(); it != sT->presetById[player->GetGUID()][action].end(); ++it)
-                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(it->second, 30, 30, -18, 0) + sT->GetItemLink(it->second, session), sender, action);
+                if (action >= sT->GetMaxSets())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set is invalid.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                auto ownerIdItr = sT->presetById.find(player->GetGUID());
+                auto ownerNameItr = sT->presetByName.find(player->GetGUID());
+                if (ownerIdItr == sT->presetById.end() || ownerNameItr == sT->presetByName.end())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                auto presetItr = ownerIdItr->second.find(uint8(action));
+                auto presetNameItr = ownerNameItr->second.find(uint8(action));
+                if (presetItr == ownerIdItr->second.end() || presetNameItr == ownerNameItr->second.end())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                for (auto const& [savedSlot, savedEntry] : presetItr->second)
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(savedEntry, 30, 30, -18, 0) + sT->GetItemLink(savedEntry, session), sender, action);
 
                 std::string useSetText = "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t" + GetLocaleText(locale, "use_set");
                 uint32 vpApplyCost = sT->GetSetApplyVotePoints();
                 if (vpApplyCost > 0)
                     useSetText += " (" + std::to_string(vpApplyCost) + " VP)";
-                std::string confirmSetText = GetLocaleText(locale, "confirm_use_set") + sT->presetByName[player->GetGUID()][action];
+                std::string confirmSetText = GetLocaleText(locale, "confirm_use_set") + presetNameItr->second;
                 if (vpApplyCost > 0)
                     confirmSetText += "\n\nVote Points: " + std::to_string(vpApplyCost) + " VP";
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, useSetText, EQUIPMENT_SLOT_END + 5, action, confirmSetText, 0, false);
-                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|t" + GetLocaleText(locale, "delete_set"), EQUIPMENT_SLOT_END + 7, action, GetLocaleText(locale, "confirm_delete_set") + sT->presetByName[player->GetGUID()][action] + "?", 0, false);
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|t" + GetLocaleText(locale, "delete_set"), EQUIPMENT_SLOT_END + 7, action, GetLocaleText(locale, "confirm_delete_set") + presetNameItr->second + "?", 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
                 SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
             } break;
@@ -807,11 +919,32 @@ public:
                     OnGossipHello(player, creature);
                     return true;
                 }
-                // action = presetID
-                CharacterDatabase.Execute("DELETE FROM `custom_transmogrification_sets` WHERE Owner = {} AND PresetID = {}", player->GetGUID().GetCounter(), action);
-                sT->presetById[player->GetGUID()][action].clear();
-                sT->presetById[player->GetGUID()].erase(action);
-                sT->presetByName[player->GetGUID()].erase(action);
+                if (action >= sT->GetMaxSets())
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set is invalid.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                uint8 const presetId = uint8(action);
+                auto ownerIdItr = sT->presetById.find(player->GetGUID());
+                auto ownerNameItr = sT->presetByName.find(player->GetGUID());
+                bool const idExists = ownerIdItr != sT->presetById.end()
+                    && ownerIdItr->second.find(presetId) != ownerIdItr->second.end();
+                bool const nameExists = ownerNameItr != sT->presetByName.end()
+                    && ownerNameItr->second.find(presetId) != ownerNameItr->second.end();
+                if (!idExists && !nameExists)
+                {
+                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists.");
+                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                    return true;
+                }
+
+                CharacterDatabase.Execute("DELETE FROM `custom_transmogrification_sets` WHERE Owner = {} AND PresetID = {}", player->GetGUID().GetCounter(), uint32(presetId));
+                if (idExists)
+                    ownerIdItr->second.erase(presetId);
+                if (nameExists)
+                    ownerNameItr->second.erase(presetId);
 
                 OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
             } break;
@@ -822,7 +955,7 @@ public:
                     OnGossipHello(player, creature);
                     return true;
                 }
-                uint32 cost = 0;
+                uint64 cost = 0;
                 bool canSave = false;
                 for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
                 {
@@ -833,6 +966,16 @@ public:
                         uint32 entry = sT->GetFakeEntry(newItem->GetGUID());
                         if (!entry)
                             continue;
+                        if (entry == HIDDEN_ITEM_ID)
+                        {
+                            if (!sT->GetAllowHiddenTransmog())
+                                continue;
+                            canSave = true;
+                            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                                "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|t" + GetLocaleText(locale, "hide_slot"),
+                                EQUIPMENT_SLOT_END + 8, 0);
+                            continue;
+                        }
                         const ItemTemplate* temp = sObjectMgr->GetItemTemplate(entry);
                         if (!temp)
                             continue;
@@ -858,7 +1001,7 @@ public:
 
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
                         "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set"),
-                        EncodeTransmogCodeSender(0), 0, insertName, cost*sT->GetSetCostModifier() + sT->GetSetCopperCost(), true);
+                        EncodeTransmogCodeSender(0), 0, insertName, GetTransmogSetPrice(cost), true);
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), sender, action);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
@@ -922,7 +1065,7 @@ public:
                 if (sT->presetByName[player->GetGUID()].find(presetID) != sT->presetByName[player->GetGUID()].end())
                     continue; // Just remember never to use presetByName[pGUID][presetID] when finding etc!
 
-                int32 cost = 0;
+                uint64 baseCost = 0;
                 std::map<uint8, uint32> items;
                 for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
                 {
@@ -940,15 +1083,14 @@ public:
                                 continue;
                             if (!sT->SuitableForTransmogrification(player, temp))
                                 continue;
-                            cost += sT->GetSpecialPrice(temp);
+                            baseCost += sT->GetSpecialPrice(temp);
                         }
                         items[slot] = entry;
                     }
                 }
                 if (items.empty())
                     break; // no transmogrified items were found to be saved
-                cost *= sT->GetSetCostModifier();
-                cost += sT->GetSetCopperCost();
+                int32 const cost = GetTransmogSetPrice(baseCost);
                 if (!player->HasEnoughMoney(cost))
                 {
                     ChatHandler(player->GetSession()).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY);
@@ -962,18 +1104,26 @@ public:
                     break;
                 }
 
-                std::ostringstream ss;
-                for (std::map<uint8, uint32>::iterator it = items.begin(); it != items.end(); ++it)
+                // Both balances were validated above. Consume VP first (it
+                // can still return failure), then gold, before publishing the set.
+                if (vpSaveCost && !sT->SpendVotePoints(player, vpSaveCost))
                 {
-                    ss << uint32(it->first) << ' ' << it->second << ' ';
-                    sT->presetById[player->GetGUID()][presetID][it->first] = it->second;
+                    ChatHandler(player->GetSession()).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
+                    break;
                 }
-                sT->presetByName[player->GetGUID()][presetID] = name; // Make sure code doesnt mess up SQL!
-                CharacterDatabase.Execute("REPLACE INTO `custom_transmogrification_sets` (`Owner`, `PresetID`, `SetName`, `SetData`) VALUES ({}, {}, \"{}\", \"{}\")", player->GetGUID().GetCounter(), uint32(presetID), name, ss.str());
                 if (cost)
                     player->ModifyMoney(-cost);
-                if (vpSaveCost)
-                    sT->SpendVotePoints(player, vpSaveCost);
+
+                std::ostringstream ss;
+                for (auto const& [savedSlot, savedEntry] : items)
+                {
+                    ss << uint32(savedSlot) << ' ' << savedEntry << ' ';
+                    sT->presetById[player->GetGUID()][presetID][savedSlot] = savedEntry;
+                }
+                sT->presetByName[player->GetGUID()][presetID] = name;
+                std::string escapedName = name;
+                CharacterDatabase.EscapeString(escapedName);
+                CharacterDatabase.Execute("REPLACE INTO `custom_transmogrification_sets` (`Owner`, `PresetID`, `SetName`, `SetData`) VALUES ({}, {}, \"{}\", \"{}\")", player->GetGUID().GetCounter(), uint32(presetID), escapedName, ss.str());
                 break;
             }
         }
@@ -1064,22 +1214,7 @@ public:
                     {
                         uint8 paymentType = sT->GetPaymentType(); // 0=Gold, 1=VP, 2=Gold+VP
 
-                        auto calcVpCost = [&]() -> uint32
-                        {
-                            // price is in copper
-                            if (price <= 0)
-                                return sT->GetVotePointsFlatCost();
-
-                            double gold = static_cast<double>(price) / 10000.0;
-                            uint32 scaled = 0;
-                            float perGold = sT->GetVotePointsPerGold();
-                            if (perGold > 0.0f)
-                                scaled = static_cast<uint32>(std::ceil(gold * static_cast<double>(perGold)));
-
-                            return sT->GetVotePointsFlatCost() + scaled;
-                        };
-
-                        uint32 vpCost = (paymentType == 0 ? 0u : calcVpCost());
+                        uint32 const vpCost = paymentType == 0 ? 0u : GetTransmogVotePointPrice(price);
 
                         std::string lineText = sT->GetItemIcon(newItem->ItemId, 30, 30, -18, 0) + sT->GetItemLink(newItem->ItemId, session);
                         std::string confirmText = GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->ItemId, 40, 40, -15, -10) + sT->GetItemLink(newItem->ItemId, session) + lineEnd;
