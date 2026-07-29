@@ -735,7 +735,16 @@ bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplat
     if (IsRangedWeapon(source->Class, source->SubClass) != IsRangedWeapon(target->Class, target->SubClass))
         return false;
 
-    if (source->SubClass != target->SubClass && !IsSubclassMismatchAllowed(player, source, target))
+    // Cloaks are one visual family even when custom or legacy item rows use
+    // different armor subclasses (commonly Cloth versus Miscellaneous). Their
+    // shared INVTYPE_CLOAK is the compatibility boundary; requiring subclass
+    // equality incorrectly hides otherwise valid cloak appearances.
+    bool const isCloakPair = source->InventoryType == INVTYPE_CLOAK
+        && target->InventoryType == INVTYPE_CLOAK;
+
+    if (source->SubClass != target->SubClass
+        && !isCloakPair
+        && !IsSubclassMismatchAllowed(player, source, target))
         return false;
 
     if (source->InventoryType != target->InventoryType && !IsInvTypeMismatchAllowed(source, target))

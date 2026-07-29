@@ -20,6 +20,7 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 -- Cant think of any good way to handle this easily, could rip flagged items from cata DB
 */
 #include <unordered_map>
+#include <unordered_set>
 #include "Transmogrification.h"
 #include "Chat.h"
 #include "ScriptedCreature.h"
@@ -431,41 +432,58 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
     std::vector<Item*> allowedItems;
     if (!target) return allowedItems;
 
+    // Collection mode adds permanently unlocked appearances, but a currently
+    // carried item must also be usable immediately. The old either/or branch
+    // ignored bag items whenever the collection system was enabled, which made
+    // newly obtained BoE cloaks and other valid sources appear unavailable
+    // until they were equipped or otherwise written to the collection cache.
+    std::unordered_set<uint32> addedEntries;
+    auto addValidSource = [&](Item* srcItem)
+    {
+        if (!srcItem)
+            return;
+
+        uint32 entry = srcItem->GetEntry();
+        if (addedEntries.find(entry) != addedEntries.end())
+            return;
+
+        if (!ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
+            return;
+
+        addedEntries.insert(entry);
+        allowedItems.push_back(srcItem);
+    };
+
     if (sT->GetUseCollectionSystem())
     {
         uint32 ownerGuid = player->GetGUID().GetCounter();
-        if (sT->collectionCache.find(ownerGuid) == sT->collectionCache.end())
-            return allowedItems;
-
-        for (uint32 itemId : sT->collectionCache[ownerGuid])
+        auto collectionItr = sT->collectionCache.find(ownerGuid);
+        if (collectionItr != sT->collectionCache.end())
         {
-            if (!sObjectMgr->GetItemTemplate(itemId))
-                continue;
-            Item* srcItem = Item::CreateItem(itemId, 1, 0);
-            if (ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
-                allowedItems.push_back(srcItem);
-        }
-    }
-    else
-    {
-        for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
-        {
-            Item* srcItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, i);
-            if (ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
-                allowedItems.push_back(srcItem);
-        }
-        for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
-        {
-            Bag* bag = player->GetBagByPos(i);
-            if (!bag)
-                continue;
-            for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+            for (uint32 itemId : collectionItr->second)
             {
-                Item* srcItem = player->GetItemByPos(i, j);
-                if (ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
-                    allowedItems.push_back(srcItem);
+                if (!sObjectMgr->GetItemTemplate(itemId))
+                    continue;
+
+                addValidSource(Item::CreateItem(itemId, 1, 0));
             }
         }
+    }
+
+    // Always merge the player's live backpack and equipped bags. This preserves
+    // the original bag-source behavior while collection mode is enabled and
+    // deduplicates entries already unlocked in the collection.
+    for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
+        addValidSource(player->GetItemByPos(INVENTORY_SLOT_BAG_0, i));
+
+    for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
+    {
+        Bag* bag = player->GetBagByPos(i);
+        if (!bag)
+            continue;
+
+        for (uint32 j = 0; j < bag->GetBagSize(); ++j)
+            addValidSource(player->GetItemByPos(i, j));
     }
 
     if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true)) {
