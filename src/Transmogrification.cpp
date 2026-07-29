@@ -1322,29 +1322,22 @@ void Transmogrification::LoadConfig(bool reload)
 
     plusDataMap.clear();
 
-    std::string stringMembershipIds = sConfigMgr->GetOption<std::string>("Transmogrification.MembershipLevels", "");
-    for (auto& itr : Acore::Tokenize(stringMembershipIds, ',', false))
+    auto loadMembershipLevels = [this](char const* configKey, PlusFeatures feature)
     {
-        plusDataMap[PLUS_FEATURE_GREY_ITEMS].push_back(Acore::StringTo<uint32>(itr).value());
-    }
+        std::string const configured = sConfigMgr->GetOption<std::string>(configKey, "");
+        for (auto const& token : Acore::Tokenize(configured, ',', false))
+        {
+            if (auto membershipId = Acore::StringTo<uint32>(token))
+                plusDataMap[feature].push_back(*membershipId);
+            else
+                LOG_WARN("module", "Ignored invalid membership ID '{}' in {}.", token, configKey);
+        }
+    };
 
-    stringMembershipIds = sConfigMgr->GetOption<std::string>("Transmogrification.MembershipLevelsLegendary", "");
-    for (auto& itr : Acore::Tokenize(stringMembershipIds, ',', false))
-    {
-        plusDataMap[PLUS_FEATURE_LEGENDARY_ITEMS].push_back(Acore::StringTo<uint32>(itr).value());
-    }
-
-    stringMembershipIds = sConfigMgr->GetOption<std::string>("Transmogrification.MembershipLevelsPet", "");
-    for (auto& itr : Acore::Tokenize(stringMembershipIds, ',', false))
-    {
-        plusDataMap[PLUS_FEATURE_PET].push_back(Acore::StringTo<uint32>(itr).value());
-    }
-
-    stringMembershipIds = sConfigMgr->GetOption<std::string>("Transmogrification.MembershipLevelsSkipLevelReq", "");
-    for (auto& itr : Acore::Tokenize(stringMembershipIds, ',', false))
-    {
-        plusDataMap[PLUS_FEATURE_SKIP_LEVEL_REQ].push_back(Acore::StringTo<uint32>(itr).value());
-    }
+    loadMembershipLevels("Transmogrification.MembershipLevels", PLUS_FEATURE_GREY_ITEMS);
+    loadMembershipLevels("Transmogrification.MembershipLevelsLegendary", PLUS_FEATURE_LEGENDARY_ITEMS);
+    loadMembershipLevels("Transmogrification.MembershipLevelsPet", PLUS_FEATURE_PET);
+    loadMembershipLevels("Transmogrification.MembershipLevelsSkipLevelReq", PLUS_FEATURE_SKIP_LEVEL_REQ);
 
     PetSpellId = sConfigMgr->GetOption<uint32>("Transmogrification.PetSpellId", 2000100);
 
@@ -1517,9 +1510,30 @@ uint32 Transmogrification::GetFreeTransmogCooldownRemaining(Player* player) cons
         return 0;
 
     uint32 const guidLow = player->GetGUID().GetCounter();
+    uint32 const now32 = uint32(std::time(nullptr));
+
+    if (now32 >= PendingFreeTransmogNextSweep)
+    {
+        for (auto itr = PendingFreeTransmogUseByGuid.begin(); itr != PendingFreeTransmogUseByGuid.end();)
+        {
+            if (now32 >= itr->second.expiresAt)
+                itr = PendingFreeTransmogUseByGuid.erase(itr);
+            else
+                ++itr;
+        }
+
+        uint64 const nextSweep = uint64(now32) + 120ULL;
+        PendingFreeTransmogNextSweep = uint32(std::min<uint64>(nextSweep, std::numeric_limits<uint32>::max()));
+    }
+
     uint32 lastFreeUse = 0;
-    if (auto const itr = PendingFreeTransmogUseByGuid.find(guidLow); itr != PendingFreeTransmogUseByGuid.end())
-        lastFreeUse = itr->second;
+    if (auto itr = PendingFreeTransmogUseByGuid.find(guidLow); itr != PendingFreeTransmogUseByGuid.end())
+    {
+        if (now32 < itr->second.expiresAt)
+            lastFreeUse = itr->second.timestamp;
+        else
+            PendingFreeTransmogUseByGuid.erase(itr);
+    }
 
     QueryResult result = CharacterDatabase.Query(
         "SELECT last_free_transmog_ts FROM custom_transmogrification_free_cooldown WHERE Owner = {} LIMIT 1",
@@ -1530,13 +1544,10 @@ uint32 Transmogrification::GetFreeTransmogCooldownRemaining(Player* player) cons
     if (!lastFreeUse)
         return 0;
 
-    uint64 const now = uint64(std::time(nullptr));
+    uint64 const now = uint64(now32);
     uint64 const readyAt = uint64(lastFreeUse) + uint64(FreeTransmogCooldownSeconds);
     if (now >= readyAt)
-    {
-        PendingFreeTransmogUseByGuid.erase(guidLow);
         return 0;
-    }
 
     return uint32(std::min<uint64>(readyAt - now, std::numeric_limits<uint32>::max()));
 }
@@ -1553,7 +1564,9 @@ void Transmogrification::MarkFreeTransmogUsed(Player* player) const
 
     uint32 const guidLow = player->GetGUID().GetCounter();
     uint32 const now = uint32(std::time(nullptr));
-    PendingFreeTransmogUseByGuid[guidLow] = now;
+    uint64 const expires64 = uint64(now) + 120ULL;
+    uint32 const expiresAt = uint32(std::min<uint64>(expires64, std::numeric_limits<uint32>::max()));
+    PendingFreeTransmogUseByGuid[guidLow] = { now, expiresAt };
     CharacterDatabase.Execute(
         "REPLACE INTO custom_transmogrification_free_cooldown (Owner, last_free_transmog_ts) VALUES ({}, {})",
         guidLow, now);

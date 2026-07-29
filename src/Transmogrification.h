@@ -236,9 +236,16 @@ public:
 
     bool FreeTransmogEnabled;
     uint32 FreeTransmogCooldownSeconds;
+    struct PendingFreeTransmogUse
+    {
+        uint32 timestamp = 0;
+        uint32 expiresAt = 0;
+    };
     // Mirrors timestamps written through asynchronous CharacterDatabase
     // execution so back-to-back gossip packets cannot consume two free uses.
-    mutable std::unordered_map<uint32, uint32> PendingFreeTransmogUseByGuid;
+    // Entries are short-lived because the character database is authoritative.
+    mutable std::unordered_map<uint32, PendingFreeTransmogUse> PendingFreeTransmogUseByGuid;
+    mutable uint32 PendingFreeTransmogNextSweep = 0;
 
     bool IsAllowed(uint32 entry) const;
     bool IsNotAllowed(uint32 entry) const;

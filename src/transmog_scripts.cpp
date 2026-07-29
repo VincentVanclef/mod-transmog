@@ -843,12 +843,19 @@ public:
                         || (savedEntry != HIDDEN_ITEM_ID
                             && (!source || !sT->CanTransmogrifyItemWithItem(player, item->GetTemplate(), source))))
                         continue;
+
+                    // Do not charge the set-apply price for slots that already
+                    // have the saved appearance. A preset with no actual changes
+                    // should be a harmless no-op rather than a paid transaction.
+                    if (sT->GetFakeEntry(item->GetGUID()) == savedEntry)
+                        continue;
+
                     pending.push_back({ item, savedEntry, savedSlot });
                 }
 
                 if (pending.empty())
                 {
-                    ChatHandler(session).SendSysMessage("None of that set's saved appearances can be applied to your currently equipped items. No Vote Points were spent.");
+                    ChatHandler(session).SendSysMessage("That set has no compatible appearance changes to apply, or it is already active. No Vote Points were spent.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
                     return true;
                 }
