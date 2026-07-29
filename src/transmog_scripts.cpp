@@ -43,17 +43,26 @@ static inline uint32 EncodeTransmogCodeSender(uint32 sender) { return sender + T
 static inline uint32 DecodeTransmogCodeSender(uint32 sender) { return sender >= uint32(TRANSMOG_GOSSIP_EXTENDED_BASE) ? sender - TRANSMOG_GOSSIP_EXTENDED_BASE : sender; }
 
 static constexpr uint32 RTG_SCOREBOARD_MENU_ID = 10000;
-static constexpr uint32 RTG_SCOREBOARD_MAIN_MENU_SENDER = 1;
+// PlayerGossip_Scoreboard sender IDs are stable and intentionally preserved.
+static constexpr uint32 RTG_SCOREBOARD_REALM_UTILITIES_SENDER = 23;
+static constexpr uint32 RTG_SCOREBOARD_SHOP_SENDER = 24;
 static constexpr uint32 TRANSMOG_SCOREBOARD_RETURN_SENDER = 250;
 
-static void OpenRTGScoreboardMainMenu(Player* player)
+static uint32 GetRewardsServicesSender()
 {
-    if (!player)
+    return sConfigMgr->GetOption<bool>("RTG.Scoreboard.Menu.CombineShopServices", true)
+        ? RTG_SCOREBOARD_SHOP_SENDER
+        : RTG_SCOREBOARD_REALM_UTILITIES_SENDER;
+}
+
+static void OpenRTGScoreboardRewardsServices(Player* player)
+{
+    if (!player || !player->GetSession())
         return;
 
     player->PlayerTalkClass->ClearMenus();
     CloseGossipMenuFor(player);
-    sPlayerGossipMgr->ShowGossipMenu(player, RTG_SCOREBOARD_MENU_ID, RTG_SCOREBOARD_MAIN_MENU_SENDER, 0);
+    sPlayerGossipMgr->ShowGossipMenu(player, RTG_SCOREBOARD_MENU_ID, GetRewardsServicesSender(), 0);
 }
 
 static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
@@ -158,15 +167,15 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK = {
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK_TO_SCOREBOARD = {
-    {LOCALE_enUS, "Back to Main Scoreboard"},
-    {LOCALE_koKR, "Back to Main Scoreboard"},
-    {LOCALE_frFR, "Back to Main Scoreboard"},
-    {LOCALE_deDE, "Back to Main Scoreboard"},
-    {LOCALE_zhCN, "Back to Main Scoreboard"},
-    {LOCALE_zhTW, "Back to Main Scoreboard"},
-    {LOCALE_esES, "Back to Main Scoreboard"},
-    {LOCALE_esMX, "Back to Main Scoreboard"},
-    {LOCALE_ruRU, "Back to Main Scoreboard"}
+    {LOCALE_enUS, "Return to Rewards & Services"},
+    {LOCALE_koKR, "Return to Rewards & Services"},
+    {LOCALE_frFR, "Return to Rewards & Services"},
+    {LOCALE_deDE, "Return to Rewards & Services"},
+    {LOCALE_zhCN, "Return to Rewards & Services"},
+    {LOCALE_zhTW, "Return to Rewards & Services"},
+    {LOCALE_esES, "Return to Rewards & Services"},
+    {LOCALE_esMX, "Return to Rewards & Services"},
+    {LOCALE_ruRU, "Return to Rewards & Services"}
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_USESET = {
@@ -585,7 +594,17 @@ public:
 
     bool OnGossipHello(Player* player, Creature* creature) override
     {
+        if (!player || !player->GetSession())
+            return false;
+
         WorldSession* session = player->GetSession();
+        if (!sT->IsEnabled() || (!creature && !sT->IsPortableNPCEnabled))
+        {
+            ChatHandler(session).SendSysMessage("Portable Transmog is currently unavailable.");
+            CloseGossipMenuFor(player);
+            return true;
+        }
+
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
 
         // Clear the search string for the player
@@ -633,15 +652,26 @@ public:
 
     bool OnGossipSelect(Player* player, Creature* creature, uint32 sender, uint32 action) override
     {
+        if (!player || !player->GetSession())
+            return false;
+
         player->PlayerTalkClass->ClearMenus();
         WorldSession* session = player->GetSession();
-        LocaleConstant locale = session->GetSessionDbLocaleIndex();
 
         if (sender == TRANSMOG_SCOREBOARD_RETURN_SENDER)
         {
-            OpenRTGScoreboardMainMenu(player);
+            OpenRTGScoreboardRewardsServices(player);
             return true;
         }
+
+        if (!sT->IsEnabled() || (!creature && !sT->IsPortableNPCEnabled))
+        {
+            ChatHandler(session).SendSysMessage("Portable Transmog is currently unavailable.");
+            CloseGossipMenuFor(player);
+            return true;
+        }
+
+        LocaleConstant locale = session->GetSessionDbLocaleIndex();
 
         // Next page
         if (sender > EQUIPMENT_SLOT_END + 10)
@@ -1586,7 +1616,7 @@ public:
 
     static void OpenRoot(Player* player, int32, int32, std::any)
     {
-        if (!player)
+        if (!player || !player->GetSession())
             return;
 
         npc_transmogrifier script;
@@ -1595,7 +1625,7 @@ public:
 
     static void OpenDirectSlot(Player* player, int32, int32 action, std::any)
     {
-        if (!player)
+        if (!player || !player->GetSession())
             return;
 
         if (action < 1 || action > EQUIPMENT_SLOT_END)
@@ -1623,12 +1653,18 @@ public:
 
     static void DispatchSelect(Player* player, int32 sender, int32 action, std::any)
     {
+        if (!player || !player->GetSession())
+            return;
+
         npc_transmogrifier script;
         script.OnGossipSelect(player, nullptr, uint32(sender), uint32(action));
     }
 
     static void DispatchSelectCode(Player* player, int32 sender, int32 action, std::string code, std::any)
     {
+        if (!player || !player->GetSession())
+            return;
+
         npc_transmogrifier script;
         script.OnGossipSelectCode(player, nullptr, uint32(sender), uint32(action), code.c_str());
     }
@@ -1636,9 +1672,14 @@ public:
 
 namespace RTG::Services::Transmog
 {
+    bool IsAvailable()
+    {
+        return sT->IsEnabled() && sT->IsPortableNPCEnabled;
+    }
+
     bool Open(Player* player)
     {
-        if (!player || !sT->IsEnabled())
+        if (!player || !player->GetSession() || !IsAvailable())
             return false;
 
         player->PlayerTalkClass->ClearMenus();
@@ -1650,7 +1691,7 @@ namespace RTG::Services::Transmog
 
     bool OpenSlot(Player* player, uint8 inventorySlot)
     {
-        if (!player || !sT->IsEnabled())
+        if (!player || !player->GetSession() || !IsAvailable())
             return false;
 
         if (inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
