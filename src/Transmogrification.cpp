@@ -885,8 +885,13 @@ bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTempl
         return false;
 
     //[AZTH] Yehonal
+    // Cloaks are universally wearable back-slot items; their armor subclass is
+    // not an armor-proficiency requirement. Applying the ordinary subclass
+    // skill gate to INVTYPE_CLOAK can reject valid bag appearances before the
+    // dedicated cloak-pair compatibility rule is reached.
+    bool const isCloak = proto->InventoryType == INVTYPE_CLOAK;
     uint32 subclassSkill = proto->GetSkill();
-    if (proto->SubClass > 0 && subclassSkill && player->GetSkillValue(proto->GetSkill()) == 0)
+    if (!isCloak && proto->SubClass > 0 && subclassSkill && player->GetSkillValue(subclassSkill) == 0)
     {
         if (proto->Class == ITEM_CLASS_ARMOR && !AllowMixedArmorTypes)
         {
@@ -975,7 +980,11 @@ bool Transmogrification::SuitableForTransmogrification(ObjectGuid guid, ItemTemp
         return false;
     }
 
-    if (proto->SubClass > 0 && playerSkillValues[proto->GetSkill()] == 0)
+    // Match the online suitability path: cloak subclasses do not require an
+    // armor proficiency and must not disappear from account/collection checks.
+    bool const isCloak = proto->InventoryType == INVTYPE_CLOAK;
+    uint32 subclassSkill = proto->GetSkill();
+    if (!isCloak && proto->SubClass > 0 && subclassSkill && playerSkillValues[subclassSkill] == 0)
     {
         if (proto->Class == ITEM_CLASS_ARMOR && !AllowMixedArmorTypes)
         {

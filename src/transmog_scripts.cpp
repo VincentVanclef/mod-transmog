@@ -19,6 +19,8 @@ Blizzard might have changed the quality requirements.
 Cant transmogrify rediculus items // Foereaper: would be fun to stab people with a fish
 -- Cant think of any good way to handle this easily, could rip flagged items from cata DB
 */
+#include <algorithm>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include "Transmogrification.h"
@@ -400,11 +402,10 @@ uint32 GetTransmogPrice (ItemTemplate const* targetItem)
     return price;
 }
 
-bool ValidForTransmog (Player* player, Item* target, Item* source, bool hasSearch, std::string searchTerm)
+bool ValidForTransmog (Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate, bool hasSearch, std::string const& searchTerm)
 {
-    if (!target || !source || !player) return false;
-    ItemTemplate const* targetTemplate = target->GetTemplate();
-    ItemTemplate const* sourceTemplate = source->GetTemplate();
+    if (!player || !targetTemplate || !sourceTemplate)
+        return false;
 
     if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
         return false;
@@ -415,66 +416,68 @@ bool ValidForTransmog (Player* player, Item* target, Item* source, bool hasSearc
     // so the player is never charged for simply clicking it again.
     if (hasSearch && sourceTemplate->Name1.find(searchTerm) == std::string::npos)
         return false;
+
     return true;
 }
 
-bool CmpTmog (Item* i1, Item* i2)
+bool CmpTmog (ItemTemplate const* first, ItemTemplate const* second)
 {
-    const ItemTemplate* i1t = i1->GetTemplate();
-    const ItemTemplate* i2t = i2->GetTemplate();
-    const int q1 = 7-i1t->Quality;
-    const int q2 = 7-i2t->Quality;
-    return std::tie(q1, i1t->Name1) < std::tie(q2, i2t->Name1);
+    if (!first || !second)
+        return second != nullptr;
+
+    int const firstQuality = 7 - first->Quality;
+    int const secondQuality = 7 - second->Quality;
+    return std::tie(firstQuality, first->Name1, first->ItemId)
+        < std::tie(secondQuality, second->Name1, second->ItemId);
 }
 
-std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string searchTerm)
+std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string const& searchTerm)
 {
-    std::vector<Item*> allowedItems;
-    if (!target) return allowedItems;
+    std::vector<ItemTemplate const*> allowedItems;
+    if (!player || !target)
+        return allowedItems;
+
+    ItemTemplate const* targetTemplate = target->GetTemplate();
+    if (!targetTemplate)
+        return allowedItems;
 
     // Collection mode adds permanently unlocked appearances, but a currently
-    // carried item must also be usable immediately. The old either/or branch
-    // ignored bag items whenever the collection system was enabled, which made
-    // newly obtained BoE cloaks and other valid sources appear unavailable
-    // until they were equipped or otherwise written to the collection cache.
+    // carried item must also be usable immediately. Merge both sources and
+    // deduplicate by entry. Work directly with immutable item templates: the
+    // previous collection path allocated ownerless Item objects that were never
+    // destroyed merely to access their templates.
     std::unordered_set<uint32> addedEntries;
-    auto addValidSource = [&](Item* srcItem)
+    auto addValidSource = [&](ItemTemplate const* sourceTemplate)
     {
-        if (!srcItem)
+        if (!sourceTemplate)
             return;
 
-        uint32 entry = srcItem->GetEntry();
+        uint32 const entry = sourceTemplate->ItemId;
         if (addedEntries.find(entry) != addedEntries.end())
             return;
 
-        if (!ValidForTransmog(player, target, srcItem, hasSearch, searchTerm))
+        if (!ValidForTransmog(player, targetTemplate, sourceTemplate, hasSearch, searchTerm))
             return;
 
         addedEntries.insert(entry);
-        allowedItems.push_back(srcItem);
+        allowedItems.push_back(sourceTemplate);
     };
 
     if (sT->GetUseCollectionSystem())
     {
-        uint32 ownerGuid = player->GetGUID().GetCounter();
-        auto collectionItr = sT->collectionCache.find(ownerGuid);
+        uint32 const ownerGuid = player->GetGUID().GetCounter();
+        auto const collectionItr = sT->collectionCache.find(ownerGuid);
         if (collectionItr != sT->collectionCache.end())
-        {
             for (uint32 itemId : collectionItr->second)
-            {
-                if (!sObjectMgr->GetItemTemplate(itemId))
-                    continue;
-
-                addValidSource(Item::CreateItem(itemId, 1, 0));
-            }
-        }
+                addValidSource(sObjectMgr->GetItemTemplate(itemId));
     }
 
     // Always merge the player's live backpack and equipped bags. This preserves
-    // the original bag-source behavior while collection mode is enabled and
-    // deduplicates entries already unlocked in the collection.
+    // immediate use of newly obtained BoE cloaks and other sources even before
+    // they have been written to the collection cache.
     for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
-        addValidSource(player->GetItemByPos(INVENTORY_SLOT_BAG_0, i));
+        if (Item* sourceItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
+            addValidSource(sourceItem->GetTemplate());
 
     for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
     {
@@ -483,12 +486,12 @@ std::vector<Item*> GetValidTransmogs (Player* player, Item* target, bool hasSear
             continue;
 
         for (uint32 j = 0; j < bag->GetBagSize(); ++j)
-            addValidSource(player->GetItemByPos(i, j));
+            if (Item* sourceItem = player->GetItemByPos(i, j))
+                addValidSource(sourceItem->GetTemplate());
     }
 
-    if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true)) {
-        sort(allowedItems.begin(), allowedItems.end(), CmpTmog);
-    }
+    if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true))
+        std::sort(allowedItems.begin(), allowedItems.end(), CmpTmog);
 
     return allowedItems;
 }
@@ -981,7 +984,7 @@ public:
             std::unordered_map<uint32, std::string>::iterator searchStringIterator = sT->searchStringByPlayer.find(player->GetGUID().GetCounter());
             hasSearchString = !(searchStringIterator == sT->searchStringByPlayer.end());
             std::string searchDisplayValue(hasSearchString ? searchStringIterator->second : GetLocaleText(locale, "search"));
-            std::vector<Item*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue);
+            std::vector<ItemTemplate const*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue);
 
             if (allowedItems.size() > 0)
             {
@@ -1027,7 +1030,7 @@ public:
                         lastPage = true;
                         break;
                     }
-                    Item* newItem = allowedItems.at(i);
+                    ItemTemplate const* newItem = allowedItems.at(i);
                     {
                         uint8 paymentType = sT->GetPaymentType(); // 0=Gold, 1=VP, 2=Gold+VP
 
@@ -1048,10 +1051,10 @@ public:
 
                         uint32 vpCost = (paymentType == 0 ? 0u : calcVpCost());
 
-                        std::string lineText = sT->GetItemIcon(newItem->GetEntry(), 30, 30, -18, 0) + sT->GetItemLink(newItem, session);
-                        std::string confirmText = GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->GetEntry(), 40, 40, -15, -10) + sT->GetItemLink(newItem, session) + lineEnd;
+                        std::string lineText = sT->GetItemIcon(newItem->ItemId, 30, 30, -18, 0) + sT->GetItemLink(newItem->ItemId, session);
+                        std::string confirmText = GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->ItemId, 40, 40, -15, -10) + sT->GetItemLink(newItem->ItemId, session) + lineEnd;
 
-                        bool isCurrentAppearance = existingTransmog == newItem->GetEntry();
+                        bool isCurrentAppearance = existingTransmog == newItem->ItemId;
                         if (isCurrentAppearance)
                         {
                             lineText += "  |cff00ff00(Currently Applied)|r";
@@ -1097,7 +1100,7 @@ public:
                             }
                         }
 
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, lineText, slot, newItem->GetEntry(), confirmText, boxMoney, false);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, lineText, slot, newItem->ItemId, confirmText, boxMoney, false);
                     }
                 }
             }
@@ -1210,7 +1213,7 @@ public:
         }
         ItemTemplate const* targetTemplate = targetItem->GetTemplate();
 
-        std::vector<Item*> itemList = GetValidTransmogs(player, targetItem, false, "");
+        std::vector<ItemTemplate const*> itemList = GetValidTransmogs(player, targetItem, false, "");
         std::vector<ItemTemplate const*> spoofedItems = GetSpoofedVendorItems(targetItem);
 
         uint32 itemCount = itemList.size();
@@ -1237,7 +1240,7 @@ public:
         uint32 existingTransmog = sT->GetFakeEntry(targetItem->GetGUID());
         for (uint32 i = 0; i < itemCount && count < MAX_VENDOR_ITEMS; ++i)
         {
-            ItemTemplate const* _proto = itemList[i]->GetTemplate();
+            ItemTemplate const* _proto = itemList[i];
             if (_proto)
             {
                 uint32 itemPrice = _proto->ItemId == existingTransmog ? 0u : price;
