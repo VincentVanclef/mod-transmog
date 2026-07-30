@@ -72,6 +72,29 @@ static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
     return creature ? creature->GetGUID() : player->GetGUID();
 }
 
+static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
+{
+    if (!player)
+        return {};
+
+    Item* targetItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    uint32 targetEntry = targetItem ? targetItem->GetEntry() : 0u;
+    uint32 fakeEntry = targetItem ? sT->GetFakeEntry(targetItem->GetGUID()) : 0u;
+    uint32 visualEntry = fakeEntry && fakeEntry != HIDDEN_ITEM_ID ? fakeEntry : targetEntry;
+    uint32 visualQuality = 0u;
+
+    if (visualEntry)
+        if (ItemTemplate const* visualTemplate = sObjectMgr->GetItemTemplate(visualEntry))
+            visualQuality = visualTemplate->Quality;
+
+    return " |cff010101[RTGTMOGSLOT:"
+        + std::to_string(uint32(slot + 1)) + ":"
+        + std::to_string(targetItem ? 1u : 0u) + ":"
+        + std::to_string(targetEntry) + ":"
+        + std::to_string(visualEntry) + ":"
+        + std::to_string(visualQuality) + "]|r";
+}
+
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HOWWORKS = {
     {LOCALE_enUS, "How does transmogrification work?"},
     {LOCALE_koKR, "형상변환은 어떻게 작동합니까?"},
@@ -675,12 +698,27 @@ public:
         {
             if (const char* slotName = sT->GetSlotName(slot, session))
             {
-                Item* newItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-                uint32 entry = newItem ? sT->GetFakeEntry(newItem->GetGUID()) : 0;
-                std::string icon = entry && entry != HIDDEN_ITEM_ID ? sT->GetItemIcon(entry, 30, 30, -18, 0) : sT->GetSlotIcon(slot, 30, 30, -18, 0);
+                Item* targetItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+                uint32 targetEntry = targetItem ? targetItem->GetEntry() : 0u;
+                uint32 fakeEntry = targetItem ? sT->GetFakeEntry(targetItem->GetGUID()) : 0u;
+                uint32 visualEntry = fakeEntry && fakeEntry != HIDDEN_ITEM_ID ? fakeEntry : targetEntry;
+
+                std::string icon = visualEntry
+                    ? sT->GetItemIcon(visualEntry, 30, 30, -18, 0)
+                    : sT->GetSlotIcon(slot, 30, 30, -18, 0);
                 std::string slotText = icon + std::string(slotName);
-                if (entry)
+                if (fakeEntry)
                     slotText += " |cff00ff00- Select to replace current appearance|r";
+                else if (!targetItem)
+                    slotText += " |cff888888- Empty target slot|r";
+
+                // RTG_Core renders the paper-doll, but mod-transmog owns the
+                // authoritative slot state. Keep the transport marker hidden in
+                // the raw gossip row so empty-slot detection, current visual,
+                // and rarity lighting never depend on Scoreboard guesses or an
+                // incompletely cached GetInventoryItem* client call.
+                slotText += GetRtgTransmogSlotStateMarker(player, slot);
+
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, slotText, EQUIPMENT_SLOT_END, slot);
             }
         }
@@ -1144,7 +1182,7 @@ public:
         WorldSession* session = player->GetSession();
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
         Item* oldItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        bool hasSearchString;
+        bool hasSearchString = false;
 
         uint16 pageNumber = 0;
         uint32 startValue = 0;
@@ -1301,13 +1339,29 @@ public:
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 3, slot, GetLocaleText(locale, "remove_transmog_slot"), 0, false);
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
         }
+        else
+        {
+            std::string slotName = sT->GetSlotName(slot, session)
+                ? sT->GetSlotName(slot, session)
+                : "Equipment Slot";
+            std::string emptyText = sT->GetSlotIcon(slot, 30, 30, -18, 0)
+                + "|cffffcc00" + slotName + " is empty.|r\n"
+                + "|cffb8aa92Equip an item in this slot before applying an appearance. "
+                  "The slot remains visible in RTG Transmog and will refresh when an item is equipped.|r";
+            AddGossipItemFor(player, GOSSIP_ICON_CHAT, emptyText, EQUIPMENT_SLOT_END + 1, 0);
+        }
         std::string backText = "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back");
         // Player-owned portable pages are asynchronous. RTG_Core reads this raw
         // slot marker to reject stale/mismatched responses, then strips it from
         // every visible label and dropdown row. Keep it on the return row so an
         // otherwise empty slot page can still be matched safely.
         if (!creature)
+        {
             backText += " |cff010101[RTGTSLOT:" + std::to_string(uint32(slot + 1)) + "]|r";
+            // Refresh the current slot's visual and quality after apply/remove
+            // without forcing the player back through the root paper-doll page.
+            backText += GetRtgTransmogSlotStateMarker(player, slot);
+        }
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, backText, EQUIPMENT_SLOT_END + 1, 0);
         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
     }
@@ -1778,8 +1832,7 @@ public:
 
         uint8 equipmentSlot = uint8(action - 1);
         WorldSession* session = player->GetSession();
-        if (!session || !sT->GetSlotName(equipmentSlot, session)
-            || !player->GetItemByPos(INVENTORY_SLOT_BAG_0, equipmentSlot))
+        if (!session || !sT->GetSlotName(equipmentSlot, session))
         {
             OpenRoot(player, 0, 0, std::any{});
             return;
@@ -1841,8 +1894,7 @@ namespace RTG::Services::Transmog
 
         uint8 equipmentSlot = inventorySlot - 1;
         WorldSession* session = player->GetSession();
-        if (!session || !sT->GetSlotName(equipmentSlot, session)
-            || !player->GetItemByPos(INVENTORY_SLOT_BAG_0, equipmentSlot))
+        if (!session || !sT->GetSlotName(equipmentSlot, session))
             return Open(player);
 
         player->PlayerTalkClass->ClearMenus();
