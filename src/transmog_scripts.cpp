@@ -711,6 +711,26 @@ static std::string FormatOutfitCopper(uint64 copper)
     return text.str();
 }
 
+static std::string GetRtgOutfitSummaryMarker(Player* player)
+{
+    if (!player)
+        return {};
+    Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player);
+    if (!draft)
+        return {};
+
+    std::string error;
+    Transmogrification::OutfitCostSummary cost = sT->CalculateOutfitCost(player, &error);
+    return " |cff010101[RTGTMOGOUTFIT:"
+        + std::to_string(draft->size()) + ":"
+        + std::to_string(cost.changedSlots) + ":"
+        + std::to_string(cost.copper) + ":"
+        + std::to_string(cost.votePoints) + ":"
+        + std::to_string(cost.tokens) + ":"
+        + std::to_string(cost.freeOutfit ? 1u : 0u) + ":"
+        + std::to_string(error.empty() ? 1u : 0u) + "]|r";
+}
+
 static void ShowOutfitReview(Player* player, Creature* creature)
 {
     if (!player || !player->GetSession())
@@ -731,7 +751,8 @@ static void ShowOutfitReview(Player* player, Creature* creature)
     Transmogrification::OutfitCostSummary cost = sT->CalculateOutfitCost(player, &error);
     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
         "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Outfit Preview|r — "
-            + std::to_string(draft->size()) + " staged slot" + (draft->size() == 1 ? "" : "s"),
+            + std::to_string(draft->size()) + " staged slot" + (draft->size() == 1 ? "" : "s")
+            + GetRtgOutfitSummaryMarker(player),
         TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
 
     for (auto const& [slot, staged] : *draft)
@@ -1029,7 +1050,7 @@ public:
         {
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
                 "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Review Outfit Preview|r ("
-                    + std::to_string(draft->size()) + ")",
+                    + std::to_string(draft->size()) + ")" + GetRtgOutfitSummaryMarker(player),
                 TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
                 "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview",
