@@ -20,7 +20,9 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 -- Cant think of any good way to handle this easily, could rip flagged items from cata DB
 */
 #include <algorithm>
+#include <cctype>
 #include <cmath>
+#include <ctime>
 #include <limits>
 #include <tuple>
 #include <unordered_map>
@@ -48,6 +50,30 @@ static constexpr uint32 RTG_SCOREBOARD_MENU_ID = 10000;
 // PlayerGossip_Scoreboard sender IDs are stable and intentionally preserved.
 static constexpr uint32 RTG_SCOREBOARD_COSMETICS_SENDER = 152;
 static constexpr uint32 TRANSMOG_SCOREBOARD_RETURN_SENDER = 250;
+static constexpr uint32 TRANSMOG_OUTFIT_REVIEW_SENDER = 240;
+static constexpr uint32 TRANSMOG_OUTFIT_APPLY_SENDER = 241;
+static constexpr uint32 TRANSMOG_OUTFIT_CLEAR_SENDER = 242;
+static constexpr uint32 TRANSMOG_TROPHY_SENDER = 243;
+static constexpr uint32 TRANSMOG_OUTFIT_UPDATE_SENDER = 244;
+static constexpr uint32 TRANSMOG_TROPHY_SOURCE_SENDER = 245;
+static constexpr uint32 TRANSMOG_OUTFIT_CLEAN_SENDER = 246;
+static constexpr uint32 TRANSMOG_TROPHY_PAGE_SIZE = 20;
+
+static std::string FormatTrophyDate(uint32 timestamp)
+{
+    if (!timestamp) return {};
+    std::time_t value = static_cast<std::time_t>(timestamp);
+    std::tm result{};
+#if defined(_WIN32)
+    localtime_s(&result, &value);
+#else
+    localtime_r(&value, &result);
+#endif
+    char buffer[16] = {};
+    if (!std::strftime(buffer, sizeof(buffer), "%Y-%m-%d", &result))
+        return {};
+    return buffer;
+}
 
 static void OpenRTGScoreboardCosmetics(Player* player)
 {
@@ -74,17 +100,41 @@ static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
     uint32 fakeEntry = targetItem ? sT->GetFakeEntry(targetItem->GetGUID()) : 0u;
     uint32 visualEntry = fakeEntry && fakeEntry != HIDDEN_ITEM_ID ? fakeEntry : targetEntry;
     uint32 visualQuality = 0u;
+    uint32 draftEntry = 0u;
+    uint32 draftMode = 0u; // 0 none, 1 appearance, 2 hidden, 3 remove
+    uint32 draftQuality = 0u;
 
     if (visualEntry)
         if (ItemTemplate const* visualTemplate = sObjectMgr->GetItemTemplate(visualEntry))
             visualQuality = visualTemplate->Quality;
+
+    if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
+    {
+        if (auto itr = draft->find(slot); itr != draft->end())
+        {
+            draftEntry = itr->second.appearanceEntry;
+            if (draftEntry == HIDDEN_ITEM_ID)
+                draftMode = 2;
+            else if (draftEntry == 0)
+                draftMode = 3;
+            else
+            {
+                draftMode = 1;
+                if (ItemTemplate const* previewTemplate = sObjectMgr->GetItemTemplate(draftEntry))
+                    draftQuality = previewTemplate->Quality;
+            }
+        }
+    }
 
     return " |cff010101[RTGTMOGSLOT:"
         + std::to_string(uint32(slot + 1)) + ":"
         + std::to_string(targetItem ? 1u : 0u) + ":"
         + std::to_string(targetEntry) + ":"
         + std::to_string(visualEntry) + ":"
-        + std::to_string(visualQuality) + "]|r";
+        + std::to_string(visualQuality) + ":"
+        + std::to_string(draftEntry) + ":"
+        + std::to_string(draftMode) + ":"
+        + std::to_string(draftQuality) + "]|r";
 }
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HOWWORKS = {
@@ -100,7 +150,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HOWWORKS = {
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_MANAGESETS = {
-    {LOCALE_enUS, "Manage sets"},
+    {LOCALE_enUS, "Saved Outfits"},
     {LOCALE_koKR, "세트 관리"},
     {LOCALE_frFR, "Gérer les ensembles"},
     {LOCALE_deDE, "Sets verwalten"},
@@ -148,7 +198,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_UPDATEMENU =
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HOWSETSWORK = {
-    {LOCALE_enUS, "How do sets work?"},
+    {LOCALE_enUS, "How do Saved Outfits work?"},
     {LOCALE_koKR, "세트는 어떻게 작동합니까?"},
     {LOCALE_frFR, "Comment fonctionnent les ensembles ?"},
     {LOCALE_deDE, "Wie funktionieren Sets?"},
@@ -160,7 +210,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HOWSETSWORK 
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_SAVESET = {
-    {LOCALE_enUS, "Save set"},
+    {LOCALE_enUS, "Save Outfit"},
     {LOCALE_koKR, "세트 저장"},
     {LOCALE_frFR, "Sauvegarder l'ensemble"},
     {LOCALE_deDE, "Set speichern"},
@@ -196,7 +246,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK_TO_SCOR
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_USESET = {
-    {LOCALE_enUS, "Use this set"},
+    {LOCALE_enUS, "Preview this outfit"},
     {LOCALE_koKR, "이 세트를 사용"},
     {LOCALE_frFR, "Utiliser cet ensemble"},
     {LOCALE_deDE, "Dieses Set verwenden"},
@@ -208,7 +258,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_USESET = {
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_CONFIRM_USESET = {
-    {LOCALE_enUS, "Using this set for transmogrify will bind transmogrified items to you and make them non-refundable and non-tradeable.\nDo you wish to continue?\n\n"},
+    {LOCALE_enUS, "Preview this Saved Outfit and review every available slot before applying it. Nothing is charged until final confirmation.\nContinue?\n\n"},
     {LOCALE_koKR, "이 세트를 변형에 사용하면 변형된 아이템이 계정에 제한되어 환불 및 거래가 불가능합니다.\n계속하시겠습니까?\n\n"},
     {LOCALE_frFR, "En utilisant cet ensemble pour la transmogrification, les objets transmogrifiés seront liés à votre personnage et deviendront non remboursables et non échangeables.\nVoulez-vous continuer ?\n\n"},
     {LOCALE_deDE, "Wenn du dieses Set für die Transmogrifikation verwendest, werden die transmogrifizierten Gegenstände an dich gebunden und können nicht erstattet oder gehandelt werden.\nMöchtest du fortfahren?\n\n"},
@@ -220,7 +270,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_CONFIRM_USES
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_DELETESET = {
-    {LOCALE_enUS, "Delete set"},
+    {LOCALE_enUS, "Delete Outfit"},
     {LOCALE_koKR, "세트 삭제"},
     {LOCALE_frFR, "Supprimer l'ensemble"},
     {LOCALE_deDE, "Set löschen"},
@@ -232,7 +282,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_DELETESET = 
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_CONFIRM_DELETESET = {
-    {LOCALE_enUS, "Are you sure you want to delete "},
+    {LOCALE_enUS, "Are you sure you want to delete the Saved Outfit "},
     {LOCALE_koKR, "을(를) 삭제하시겠습니까 "},
     {LOCALE_frFR, "Êtes-vous sûr de vouloir supprimer "},
     {LOCALE_deDE, "Möchten Sie wirklich löschen "},
@@ -244,7 +294,7 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_CONFIRM_DELE
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_INSERTSETNAME = {
-    {LOCALE_enUS, "Insert set name"},
+    {LOCALE_enUS, "Enter outfit name"},
     {LOCALE_koKR, "세트 이름 입력"},
     {LOCALE_frFR, "Insérer le nom de l'ensemble"},
     {LOCALE_deDE, "Set-Namen einfügen"},
@@ -561,7 +611,263 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
     if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true))
         std::sort(allowedItems.begin(), allowedItems.end(), CmpTmog);
 
+    // The Trophy Collection preserves every earned item, while the appearance
+    // picker presents one representative for each visual model. This keeps
+    // character history complete without flooding dropdowns with identical art.
+    std::unordered_set<uint32> addedDisplays;
+    allowedItems.erase(std::remove_if(allowedItems.begin(), allowedItems.end(), [&](ItemTemplate const* item)
+    {
+        if (!item) return true;
+        return !addedDisplays.insert(item->DisplayInfoID).second;
+    }), allowedItems.end());
+
     return allowedItems;
+}
+
+static std::map<uint8, uint32> BuildCompleteOutfitLook(Player* player)
+{
+    std::map<uint8, uint32> items;
+    if (!player || !player->GetSession())
+        return items;
+
+    // A saved outfit describes the character's complete visible transmog plan,
+    // not only the slots that happened to be changed in the current preview.
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+    {
+        if (!sT->GetSlotName(slot, player->GetSession()))
+            continue;
+
+        if (Item* equipped = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            items[slot] = sT->GetFakeEntry(equipped->GetGUID()); // 0 intentionally means original appearance.
+    }
+
+    if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
+        for (auto const& [slot, staged] : *draft)
+            items[slot] = staged.appearanceEntry;
+
+    return items;
+}
+
+static std::string FormatSavedOutfitAppearance(Player* player, uint8 slot, uint32 entry)
+{
+    if (!player || !player->GetSession())
+        return {};
+
+    char const* rawSlotName = sT->GetSlotName(slot, player->GetSession());
+    std::string slotName = rawSlotName ? rawSlotName : "Equipment Slot";
+    std::string appearance;
+    if (entry == 0)
+        appearance = "Original appearance";
+    else if (entry == HIDDEN_ITEM_ID)
+        appearance = "Hidden slot";
+    else
+        appearance = sT->GetItemIcon(entry, 30, 30, -18, 0) + sT->GetItemLink(entry, player->GetSession());
+
+    return "|cffffcc00" + slotName + ":|r " + appearance;
+}
+
+static std::string SerializeSavedOutfit(std::map<uint8, uint32> const& items)
+{
+    std::ostringstream data;
+    for (auto const& [slot, entry] : items)
+        data << uint32(slot) << ' ' << entry << ' ';
+    return data.str();
+}
+
+static bool SavedOutfitEntryIsAvailable(Player* player, uint8 slot, uint32 entry)
+{
+    if (!player || slot >= EQUIPMENT_SLOT_END)
+        return false;
+    Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    if (!target)
+        return false;
+    if (entry == 0)
+        return true;
+    if (entry == HIDDEN_ITEM_ID)
+        return sT->GetAllowHiddenTransmog();
+    ItemTemplate const* source = sObjectMgr->GetItemTemplate(entry);
+    return source && sT->CharacterCanUseAppearance(player, entry)
+        && sT->CanTransmogrifyItemWithItem(player, target->GetTemplate(), source);
+}
+
+static std::vector<uint8> FindUnavailableSavedOutfitSlots(Player* player, std::map<uint8, uint32> const& items)
+{
+    std::vector<uint8> unavailable;
+    for (auto const& [slot, entry] : items)
+        if (!SavedOutfitEntryIsAvailable(player, slot, entry))
+            unavailable.push_back(slot);
+    return unavailable;
+}
+
+static std::string FormatOutfitCopper(uint64 copper)
+{
+    uint64 gold = copper / 10000ULL;
+    uint64 silver = (copper % 10000ULL) / 100ULL;
+    uint64 coins = copper % 100ULL;
+    std::ostringstream text;
+    if (gold) text << gold << "g ";
+    if (silver || gold) text << silver << "s ";
+    text << coins << "c";
+    return text.str();
+}
+
+static void ShowOutfitReview(Player* player, Creature* creature)
+{
+    if (!player || !player->GetSession())
+        return;
+    WorldSession* session = player->GetSession();
+    Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player);
+    if (!draft)
+    {
+        ChatHandler(session).SendSysMessage("Choose one or more appearances first. Nothing has been purchased yet.");
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|TInterface/ICONS/Ability_Spy:30:30:-18:0|tBack to Transmog Studio",
+            EQUIPMENT_SLOT_END + 1, 0);
+        SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+        return;
+    }
+
+    std::string error;
+    Transmogrification::OutfitCostSummary cost = sT->CalculateOutfitCost(player, &error);
+    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+        "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Outfit Preview|r — "
+            + std::to_string(draft->size()) + " staged slot" + (draft->size() == 1 ? "" : "s"),
+        TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
+
+    for (auto const& [slot, staged] : *draft)
+    {
+        std::string slotName = sT->GetSlotName(slot, session) ? sT->GetSlotName(slot, session) : "Equipment Slot";
+        std::string appearance;
+        if (staged.appearanceEntry == 0)
+            appearance = "Restore original appearance";
+        else if (staged.appearanceEntry == HIDDEN_ITEM_ID)
+            appearance = "Hide this slot";
+        else
+            appearance = sT->GetItemIcon(staged.appearanceEntry, 26, 26, -16, 0) + sT->GetItemLink(staged.appearanceEntry, session);
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|cffffcc00" + slotName + ":|r " + appearance,
+            TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
+    }
+
+    std::string priceText;
+    if (!error.empty())
+        priceText = "|cffff5555" + error + "|r";
+    else if (cost.freeOutfit)
+        priceText = "|cff00ff00Your ready free use covers this complete outfit.|r";
+    else
+    {
+        std::vector<std::string> parts;
+        if (cost.copper) parts.push_back(FormatOutfitCopper(cost.copper));
+        if (cost.votePoints) parts.push_back(std::to_string(cost.votePoints) + " VP");
+        if (cost.tokens) parts.push_back(std::to_string(cost.tokens) + " transmog token" + (cost.tokens == 1 ? "" : "s"));
+        if (parts.empty()) priceText = "No charge";
+        else
+        {
+            for (std::size_t i = 0; i < parts.size(); ++i)
+            {
+                if (i) priceText += " + ";
+                priceText += parts[i];
+            }
+        }
+    }
+    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+        "|TInterface/ICONS/INV_Misc_Coin_01:30:30:-18:0|tCombined cost: " + priceText,
+        TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
+
+    if (error.empty() && cost.changedSlots)
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Complete Outfit|r",
+            TRANSMOG_OUTFIT_APPLY_SENDER, 0,
+            "Apply every reviewed appearance as one complete outfit?\n\n" + priceText,
+            0, false);
+#ifdef PRESETS
+    if (sT->GetEnableSets() && sT->presetByName[player->GetGUID()].size() < sT->GetMaxSets())
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|tSave Preview as Outfit",
+            EncodeTransmogCodeSender(0), 0,
+            "Name this character-specific outfit. Saving is free and does not apply or purchase it.",
+            0, true);
+#endif
+    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+        "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Preview",
+        TRANSMOG_OUTFIT_CLEAR_SENDER, 0);
+    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+        "|TInterface/ICONS/Ability_Spy:30:30:-18:0|tBack to Transmog Studio",
+        EQUIPMENT_SLOT_END + 1, 0);
+    SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
+}
+
+static void ShowTrophyCollection(Player* player, Creature* creature, uint32 page)
+{
+    if (!player || !player->GetSession()) return;
+    WorldSession* session = player->GetSession();
+    uint32 ownerGuid = player->GetGUID().GetCounter();
+    std::vector<uint32> trophies;
+    if (auto itr = sT->collectionCache.find(ownerGuid); itr != sT->collectionCache.end())
+        trophies.assign(itr->second.begin(), itr->second.end());
+    std::sort(trophies.begin(), trophies.end(), [](uint32 left, uint32 right)
+    {
+        ItemTemplate const* a=sObjectMgr->GetItemTemplate(left); ItemTemplate const* b=sObjectMgr->GetItemTemplate(right);
+        if (!a || !b) return b != nullptr;
+        if (a->Quality != b->Quality) return a->Quality > b->Quality;
+        if (a->Name1 != b->Name1) return a->Name1 < b->Name1;
+        return left < right;
+    });
+
+    std::unordered_set<uint32> displays;
+    for (uint32 entry : trophies)
+        if (ItemTemplate const* item=sObjectMgr->GetItemTemplate(entry)) displays.insert(item->DisplayInfoID);
+    uint32 pages = std::max<uint32>(1, uint32((trophies.size()+TRANSMOG_TROPHY_PAGE_SIZE-1)/TRANSMOG_TROPHY_PAGE_SIZE));
+    page = std::min<uint32>(std::max<uint32>(1,page),pages);
+    AddGossipItemFor(player,GOSSIP_ICON_MONEY_BAG,
+        "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Character Trophy Collection|r — "
+        + std::to_string(trophies.size()) + " items, " + std::to_string(displays.size()) + " unique appearances",
+        TRANSMOG_TROPHY_SENDER,page);
+
+    uint32 begin=(page-1)*TRANSMOG_TROPHY_PAGE_SIZE;
+    uint32 finish=std::min<uint32>(uint32(trophies.size()),begin+TRANSMOG_TROPHY_PAGE_SIZE);
+    struct TrophyMeta { uint32 discoveredAt=0; std::string source="legacy"; bool legacy=true; };
+    std::unordered_map<uint32,TrophyMeta> metadata;
+    if (begin < finish)
+    {
+        std::ostringstream ids;
+        for (uint32 i=begin;i<finish;++i) { if (i>begin) ids << ','; ids << trophies[i]; }
+        if (QueryResult result=CharacterDatabase.Query(
+            "SELECT `item_template_id`,`first_discovered_at`,`discovery_source`,`legacy_discovery` "
+            "FROM `custom_unlocked_appearances` WHERE `owner_guid`={} AND `item_template_id` IN ({})",
+            ownerGuid,ids.str()))
+        do { Field* f=result->Fetch(); metadata[f[0].Get<uint32>()]={f[1].Get<uint32>(),f[2].Get<std::string>(),f[3].Get<uint8>()!=0}; } while(result->NextRow());
+    }
+    auto sourceLabel=[](std::string source)
+    {
+        if (source=="loot") return std::string("Looted");
+        if (source=="crafted") return std::string("Crafted");
+        if (source=="equip") return std::string("Equipped");
+        if (source=="purchase") return std::string("Purchased");
+        if (source=="acquired") return std::string("Acquired");
+        if (source=="retroactive-owned") return std::string("Owned at wardrobe launch");
+        if (source=="retroactive-bank") return std::string("Stored in bank at wardrobe launch");
+        return std::string("Legacy discovery");
+    };
+    for (uint32 i=begin;i<finish;++i)
+    {
+        uint32 entry=trophies[i];
+        ItemTemplate const* item=sObjectMgr->GetItemTemplate(entry);
+        if (!item) continue;
+        TrophyMeta meta; if (auto itr=metadata.find(entry);itr!=metadata.end()) meta=itr->second;
+        std::string detail=sourceLabel(meta.source);
+        if (std::string date = FormatTrophyDate(meta.discoveredAt); !date.empty()) detail += " • " + date;
+        AddGossipItemFor(player,GOSSIP_ICON_MONEY_BAG,
+            sT->GetItemIcon(entry,28,28,-17,0)+sT->GetItemLink(entry,session)
+            + " |cff8f8068— " + detail + " • Find Source in RTGHead|r",
+            TRANSMOG_TROPHY_SOURCE_SENDER,entry);
+    }
+    if (page>1) AddGossipItemFor(player,GOSSIP_ICON_CHAT,"Previous Page",TRANSMOG_TROPHY_SENDER,page-1);
+    if (page<pages) AddGossipItemFor(player,GOSSIP_ICON_CHAT,"Next Page",TRANSMOG_TROPHY_SENDER,page+1);
+    AddGossipItemFor(player,GOSSIP_ICON_MONEY_BAG,
+        "|TInterface/ICONS/Ability_Spy:30:30:-18:0|tBack to Transmog Studio",
+        EQUIPMENT_SLOT_END+1,0);
+    SendGossipMenuFor(player,DEFAULT_GOSSIP_MESSAGE,GetTransmogMenuGuid(player,creature));
 }
 
 bool PerformTransmogrification(Player* player, uint32 itemEntry, uint32 /*cost*/)
@@ -699,7 +1005,12 @@ public:
                     ? sT->GetItemIcon(visualEntry, 30, 30, -18, 0)
                     : sT->GetSlotIcon(slot, 30, 30, -18, 0);
                 std::string slotText = icon + std::string(slotName);
-                if (fakeEntry)
+                bool staged = false;
+                if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
+                    staged = draft->find(slot) != draft->end();
+                if (staged)
+                    slotText += " |cffffcc00- Preview staged|r";
+                else if (fakeEntry)
                     slotText += " |cff00ff00- Select to replace current appearance|r";
                 else if (!targetItem)
                     slotText += " |cff888888- Empty target slot|r";
@@ -714,10 +1025,23 @@ public:
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, slotText, EQUIPMENT_SLOT_END, slot);
             }
         }
+        if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
+        {
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Review Outfit Preview|r ("
+                    + std::to_string(draft->size()) + ")",
+                TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview",
+                TRANSMOG_OUTFIT_CLEAR_SENDER, 0);
+        }
 #ifdef PRESETS
         if (sT->GetEnableSets())
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/RAIDFRAME/UI-RAIDFRAME-MAINASSIST:30:30:-18:0|t" + GetLocaleText(locale, "manage_sets"), EQUIPMENT_SLOT_END + 4, 0);
 #endif
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|TInterface/ICONS/INV_Misc_Book_09:30:30:-18:0|tCharacter Trophy Collection",
+            TRANSMOG_TROPHY_SENDER, 1);
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 2, 0, GetLocaleText(locale, "remove_transmog_ask"), 0, false);
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END + 1, 0);
         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
@@ -746,6 +1070,125 @@ public:
         }
 
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
+
+        if (sender == TRANSMOG_OUTFIT_REVIEW_SENDER)
+        {
+            ShowOutfitReview(player, creature);
+            return true;
+        }
+        if (sender == TRANSMOG_OUTFIT_APPLY_SENDER)
+        {
+            std::string result;
+            bool success = sT->ApplyOutfitDraft(player, result);
+            if (success) session->SendAreaTriggerMessage("{}", result);
+            else ChatHandler(session).SendSysMessage(result);
+            OnGossipHello(player, creature);
+            return true;
+        }
+        if (sender == TRANSMOG_OUTFIT_CLEAR_SENDER)
+        {
+            sT->ClearOutfitDraft(player);
+            session->SendAreaTriggerMessage("Outfit preview cleared. Nothing was charged.");
+            OnGossipHello(player, creature);
+            return true;
+        }
+        if (sender == TRANSMOG_TROPHY_SENDER)
+        {
+            ShowTrophyCollection(player, creature, action ? action : 1);
+            return true;
+        }
+        if (sender == TRANSMOG_TROPHY_SOURCE_SENDER)
+        {
+            ChatHandler(session).SendSysMessage("RTGATLAS^OPEN^" + std::to_string(action));
+            return true;
+        }
+
+        if (sender == TRANSMOG_OUTFIT_CLEAN_SENDER)
+        {
+            if (!sT->GetEnableSets() || action >= sT->GetMaxSets())
+            {
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                return true;
+            }
+            auto ownerIdItr = sT->presetById.find(player->GetGUID());
+            if (ownerIdItr == sT->presetById.end())
+            {
+                ChatHandler(session).SendSysMessage("That saved outfit no longer exists.");
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                return true;
+            }
+            auto presetItr = ownerIdItr->second.find(uint8(action));
+            if (presetItr == ownerIdItr->second.end())
+            {
+                ChatHandler(session).SendSysMessage("That saved outfit no longer exists.");
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                return true;
+            }
+
+            std::vector<uint8> const unavailable = FindUnavailableSavedOutfitSlots(player, presetItr->second);
+            if (unavailable.empty())
+            {
+                session->SendAreaTriggerMessage("Every saved slot is currently available.");
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+                return true;
+            }
+            if (unavailable.size() == presetItr->second.size())
+            {
+                ChatHandler(session).SendSysMessage("No usable slots remain in that saved outfit. Update or delete it instead.");
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+                return true;
+            }
+
+            for (uint8 slot : unavailable)
+                presetItr->second.erase(slot);
+            std::string const data = SerializeSavedOutfit(presetItr->second);
+            CharacterDatabase.DirectExecute(
+                "UPDATE `custom_transmogrification_sets` SET `SetData`='{}',`UpdatedAt`=UNIX_TIMESTAMP(),`DataVersion`=1 "
+                "WHERE `Owner`={} AND `PresetID`={}",
+                data, player->GetGUID().GetCounter(), action);
+            session->SendAreaTriggerMessage("Removed {} unavailable slot{} from the saved outfit.",
+                unavailable.size(), unavailable.size() == 1 ? "" : "s");
+            OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+            return true;
+        }
+
+        if (sender == TRANSMOG_OUTFIT_UPDATE_SENDER)
+        {
+            if (!sT->GetEnableSets() || action >= sT->GetMaxSets())
+            {
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                return true;
+            }
+
+            auto ownerIdItr = sT->presetById.find(player->GetGUID());
+            auto ownerNameItr = sT->presetByName.find(player->GetGUID());
+            if (ownerIdItr == sT->presetById.end() || ownerNameItr == sT->presetByName.end()
+                || ownerIdItr->second.find(uint8(action)) == ownerIdItr->second.end()
+                || ownerNameItr->second.find(uint8(action)) == ownerNameItr->second.end())
+            {
+                ChatHandler(session).SendSysMessage("That saved outfit no longer exists.");
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
+                return true;
+            }
+
+            std::map<uint8, uint32> const items = BuildCompleteOutfitLook(player);
+            if (items.empty())
+            {
+                ChatHandler(session).SendSysMessage("Equip at least one supported item before replacing a saved outfit.");
+                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+                return true;
+            }
+
+            std::string const data = SerializeSavedOutfit(items);
+            ownerIdItr->second[uint8(action)] = items;
+            CharacterDatabase.Execute(
+                "UPDATE `custom_transmogrification_sets` SET `SetData`='{}',`UpdatedAt`=UNIX_TIMESTAMP(),`DataVersion`=1 "
+                "WHERE `Owner`={} AND `PresetID`={}",
+                data, player->GetGUID().GetCounter(), action);
+            session->SendAreaTriggerMessage("Saved outfit updated from your complete current preview.");
+            OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+            return true;
+        }
 
         // Next page
         if (sender > EQUIPMENT_SLOT_END + 10)
@@ -795,13 +1238,11 @@ public:
                     ChatHandler(session).SendNotification(LANG_ERR_UNTRANSMOG_NO_TRANSMOGS);
                 OnGossipHello(player, creature);
             } break;
-            case EQUIPMENT_SLOT_END + 3: // Remove Transmogrification from single item
+            case EQUIPMENT_SLOT_END + 3: // Preview original appearance for one slot
             {
-                RemoveTransmogrification(player);
-
-                // Return to the owned Transmog root after any mutation. The
-                // Scoreboard client can immediately request any slot again and
-                // receives a freshly populated list instead of a stale page.
+                std::string error;
+                if (!sT->StageOutfitAppearance(player, uint8(action), 0, error))
+                    ChatHandler(session).SendSysMessage(error);
                 OnGossipHello(player, creature);
             } break;
     #ifdef PRESETS
@@ -820,87 +1261,40 @@ public:
                 if (sT->presetByName[player->GetGUID()].size() < sT->GetMaxSets())
                 {
                     std::string saveSetText = "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set");
-                    uint32 vpSaveCost = sT->GetSetSaveVotePoints();
-                    if (vpSaveCost > 0)
-                        saveSetText += " (" + std::to_string(vpSaveCost) + " VP)";
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, saveSetText, EQUIPMENT_SLOT_END + 8, 0);
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 1, 0);
                 SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
             } break;
-            case EQUIPMENT_SLOT_END + 5: // Use preset
+            case EQUIPMENT_SLOT_END + 5: // Preview saved outfit
             {
-                if (!sT->GetEnableSets())
+                if (!sT->GetEnableSets() || action >= sT->GetMaxSets())
                 {
-                    OnGossipHello(player, creature);
-                    return true;
-                }
-                if (action >= sT->GetMaxSets())
-                {
-                    ChatHandler(session).SendSysMessage("That saved transmog set is invalid. No Vote Points were spent.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
-
                 auto ownerItr = sT->presetById.find(player->GetGUID());
                 if (ownerItr == sT->presetById.end())
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists. No Vote Points were spent.");
+                    ChatHandler(session).SendSysMessage("That saved outfit no longer exists.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
-
                 auto presetItr = ownerItr->second.find(uint8(action));
                 if (presetItr == ownerItr->second.end())
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists. No Vote Points were spent.");
+                    ChatHandler(session).SendSysMessage("That saved outfit no longer exists.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
-
-                struct PendingPresetAppearance
+                std::string error;
+                if (!sT->StageSavedOutfit(player, presetItr->second, error))
                 {
-                    Item* item = nullptr;
-                    uint32 entry = 0;
-                    uint8 slot = 0;
-                };
-                std::vector<PendingPresetAppearance> pending;
-                for (auto const& [savedSlot, savedEntry] : presetItr->second)
-                {
-                    Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, savedSlot);
-                    ItemTemplate const* source = savedEntry == HIDDEN_ITEM_ID ? nullptr : sObjectMgr->GetItemTemplate(savedEntry);
-                    if (!item || (savedEntry == HIDDEN_ITEM_ID && !sT->GetAllowHiddenTransmog())
-                        || (savedEntry != HIDDEN_ITEM_ID
-                            && (!source || !sT->CanTransmogrifyItemWithItem(player, item->GetTemplate(), source))))
-                        continue;
-
-                    // Do not charge the set-apply price for slots that already
-                    // have the saved appearance. A preset with no actual changes
-                    // should be a harmless no-op rather than a paid transaction.
-                    if (sT->GetFakeEntry(item->GetGUID()) == savedEntry)
-                        continue;
-
-                    pending.push_back({ item, savedEntry, savedSlot });
-                }
-
-                if (pending.empty())
-                {
-                    ChatHandler(session).SendSysMessage("That set has no compatible appearance changes to apply, or it is already active. No Vote Points were spent.");
+                    ChatHandler(session).SendSysMessage(error);
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
                     return true;
                 }
-
-                uint32 const vpApplyCost = sT->GetSetApplyVotePoints();
-                if (vpApplyCost && !sT->SpendVotePoints(player, vpApplyCost))
-                {
-                    ChatHandler(session).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
-                    OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
-                    return true;
-                }
-
-                for (PendingPresetAppearance const& appearance : pending)
-                    sT->PresetTransmog(player, appearance.item, appearance.entry, appearance.slot);
-                OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 6, action);
+                ShowOutfitReview(player, creature);
             } break;
             case EQUIPMENT_SLOT_END + 6: // view preset
             {
@@ -911,7 +1305,7 @@ public:
                 }
                 if (action >= sT->GetMaxSets())
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set is invalid.");
+                    ChatHandler(session).SendSysMessage("That Saved Outfit is invalid.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
@@ -920,7 +1314,7 @@ public:
                 auto ownerNameItr = sT->presetByName.find(player->GetGUID());
                 if (ownerIdItr == sT->presetById.end() || ownerNameItr == sT->presetByName.end())
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists.");
+                    ChatHandler(session).SendSysMessage("That Saved Outfit no longer exists.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
@@ -929,22 +1323,31 @@ public:
                 auto presetNameItr = ownerNameItr->second.find(uint8(action));
                 if (presetItr == ownerIdItr->second.end() || presetNameItr == ownerNameItr->second.end())
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists.");
+                    ChatHandler(session).SendSysMessage("That Saved Outfit no longer exists.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
 
                 for (auto const& [savedSlot, savedEntry] : presetItr->second)
-                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(savedEntry, 30, 30, -18, 0) + sT->GetItemLink(savedEntry, session), sender, action);
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                        FormatSavedOutfitAppearance(player, savedSlot, savedEntry), sender, action);
 
-                std::string useSetText = "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t" + GetLocaleText(locale, "use_set");
-                uint32 vpApplyCost = sT->GetSetApplyVotePoints();
-                if (vpApplyCost > 0)
-                    useSetText += " (" + std::to_string(vpApplyCost) + " VP)";
-                std::string confirmSetText = GetLocaleText(locale, "confirm_use_set") + presetNameItr->second;
-                if (vpApplyCost > 0)
-                    confirmSetText += "\n\nVote Points: " + std::to_string(vpApplyCost) + " VP";
-                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, useSetText, EQUIPMENT_SLOT_END + 5, action, confirmSetText, 0, false);
+                std::vector<uint8> const unavailable = FindUnavailableSavedOutfitSlots(player, presetItr->second);
+                if (!unavailable.empty())
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                        "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|tRemove "
+                            + std::to_string(unavailable.size()) + " Unavailable Slot" + (unavailable.size() == 1 ? "" : "s"),
+                        TRANSMOG_OUTFIT_CLEAN_SENDER, action,
+                        "Remove only the unavailable slots from this character's saved outfit?", 0, false);
+
+                std::string useSetText = "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|tPreview Saved Outfit";
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, useSetText, EQUIPMENT_SLOT_END + 5, action);
+                if (!BuildCompleteOutfitLook(player).empty())
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                        "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|tReplace with Current Preview",
+                        TRANSMOG_OUTFIT_UPDATE_SENDER, action,
+                        "Replace this saved outfit with the character's complete current preview? The outfit name will stay the same.",
+                        0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|t" + GetLocaleText(locale, "delete_set"), EQUIPMENT_SLOT_END + 7, action, GetLocaleText(locale, "confirm_delete_set") + presetNameItr->second + "?", 0, false);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
                 SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
@@ -958,7 +1361,7 @@ public:
                 }
                 if (action >= sT->GetMaxSets())
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set is invalid.");
+                    ChatHandler(session).SendSysMessage("That Saved Outfit is invalid.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
@@ -972,7 +1375,7 @@ public:
                     && ownerNameItr->second.find(presetId) != ownerNameItr->second.end();
                 if (!idExists && !nameExists)
                 {
-                    ChatHandler(session).SendSysMessage("That saved transmog set no longer exists.");
+                    ChatHandler(session).SendSysMessage("That Saved Outfit no longer exists.");
                     OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
                     return true;
                 }
@@ -985,60 +1388,25 @@ public:
 
                 OnGossipSelect(player, creature, EQUIPMENT_SLOT_END + 4, 0);
             } break;
-            case EQUIPMENT_SLOT_END + 8: // Save preset
+            case EQUIPMENT_SLOT_END + 8: // Save outfit
             {
                 if (!sT->GetEnableSets() || sT->presetByName[player->GetGUID()].size() >= sT->GetMaxSets())
                 {
                     OnGossipHello(player, creature);
                     return true;
                 }
-                uint64 cost = 0;
-                bool canSave = false;
-                for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-                {
-                    if (!sT->GetSlotName(slot, session))
-                        continue;
-                    if (Item* newItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-                    {
-                        uint32 entry = sT->GetFakeEntry(newItem->GetGUID());
-                        if (!entry)
-                            continue;
-                        if (entry == HIDDEN_ITEM_ID)
-                        {
-                            if (!sT->GetAllowHiddenTransmog())
-                                continue;
-                            canSave = true;
-                            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                                "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|t" + GetLocaleText(locale, "hide_slot"),
-                                EQUIPMENT_SLOT_END + 8, 0);
-                            continue;
-                        }
-                        const ItemTemplate* temp = sObjectMgr->GetItemTemplate(entry);
-                        if (!temp)
-                            continue;
-                        if (!sT->SuitableForTransmogrification(player, temp)) // no need to check?
-                            continue;
-                        cost += sT->GetSpecialPrice(temp);
-                        canSave = true;
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(entry, 30, 30, -18, 0) + sT->GetItemLink(entry, session), EQUIPMENT_SLOT_END + 8, 0);
-                    }
-                }
-                if (canSave)
-                {
-                    std::string insertName = GetLocaleText(locale, "insert_set_name");
-                    uint32 vpSaveCost = sT->GetSetSaveVotePoints();
-                    uint32 vpApplyCost = sT->GetSetApplyVotePoints();
-                    if (vpSaveCost > 0)
-                    {
-                        insertName += " (" + std::to_string(vpSaveCost) + " VP to save";
-                        if (vpApplyCost > 0)
-                            insertName += ", " + std::to_string(vpApplyCost) + " VP to apply";
-                        insertName += ")";
-                    }
 
+                std::map<uint8, uint32> const items = BuildCompleteOutfitLook(player);
+                for (auto const& [savedSlot, savedEntry] : items)
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                        "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|t" + GetLocaleText(locale, "save_set"),
-                        EncodeTransmogCodeSender(0), 0, insertName, GetTransmogSetPrice(cost), true);
+                        FormatSavedOutfitAppearance(player, savedSlot, savedEntry), EQUIPMENT_SLOT_END + 8, 0);
+
+                if (!items.empty())
+                {
+                    std::string insertName = "Name this character-specific outfit. Saving is free and does not apply any appearance.";
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                        "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|tSave Complete Preview as Outfit",
+                        EncodeTransmogCodeSender(0), 0, insertName, 0, true);
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), sender, action);
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back"), EQUIPMENT_SLOT_END + 4, 0);
@@ -1062,7 +1430,11 @@ public:
                     OnGossipHello(player, creature);
                     return true;
                 }
-                PerformTransmogrification(player, action, sender);
+                std::string error;
+                if (!sT->StageOutfitAppearance(player, uint8(sender), action, error))
+                    ChatHandler(session).SendSysMessage(error);
+                else
+                    session->SendAreaTriggerMessage("Appearance added to your outfit preview. Nothing has been charged.");
                 OnGossipHello(player, creature);
             } break;
         }
@@ -1093,8 +1465,15 @@ public:
             return true;
         }
         std::string name(code);
-        if (name.find('"') != std::string::npos || name.find('\\') != std::string::npos)
-            ChatHandler(player->GetSession()).SendNotification(LANG_PRESET_ERR_INVALID_NAME);
+        auto const firstVisible = std::find_if_not(name.begin(), name.end(), [](unsigned char c) { return std::isspace(c) != 0; });
+        auto const lastVisible = std::find_if_not(name.rbegin(), name.rend(), [](unsigned char c) { return std::isspace(c) != 0; }).base();
+        if (firstVisible < lastVisible)
+            name = std::string(firstVisible, lastVisible);
+        else
+            name.clear();
+
+        if (name.empty() || name.size() > 32 || name.find('"') != std::string::npos || name.find('\\') != std::string::npos)
+            ChatHandler(player->GetSession()).SendNotification("Outfit names must contain 1-32 visible characters and cannot use quotes or backslashes.");
         else
         {
             for (uint8 presetID = 0; presetID < sT->GetMaxSets(); ++presetID) // should never reach over max
@@ -1102,65 +1481,24 @@ public:
                 if (sT->presetByName[player->GetGUID()].find(presetID) != sT->presetByName[player->GetGUID()].end())
                     continue; // Just remember never to use presetByName[pGUID][presetID] when finding etc!
 
-                uint64 baseCost = 0;
-                std::map<uint8, uint32> items;
-                for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
-                {
-                    if (!sT->GetSlotName(slot, player->GetSession()))
-                        continue;
-                    if (Item* newItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-                    {
-                        uint32 entry = sT->GetFakeEntry(newItem->GetGUID());
-                        if (!entry)
-                            continue;
-                        if (entry != HIDDEN_ITEM_ID)
-                        {
-                            const ItemTemplate* temp = sObjectMgr->GetItemTemplate(entry);
-                            if (!temp)
-                                continue;
-                            if (!sT->SuitableForTransmogrification(player, temp))
-                                continue;
-                            baseCost += sT->GetSpecialPrice(temp);
-                        }
-                        items[slot] = entry;
-                    }
-                }
+                std::map<uint8, uint32> items = BuildCompleteOutfitLook(player);
                 if (items.empty())
-                    break; // no transmogrified items were found to be saved
-                int32 const cost = GetTransmogSetPrice(baseCost);
-                if (!player->HasEnoughMoney(cost))
                 {
-                    ChatHandler(player->GetSession()).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY);
+                    ChatHandler(player->GetSession()).SendSysMessage("Preview or apply at least one appearance before saving an outfit.");
                     break;
                 }
 
-                uint32 vpSaveCost = sT->GetSetSaveVotePoints();
-                if (vpSaveCost && !sT->HasVotePoints(player, vpSaveCost))
-                {
-                    ChatHandler(player->GetSession()).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
-                    break;
-                }
-
-                // Both balances were validated above. Consume VP first (it
-                // can still return failure), then gold, before publishing the set.
-                if (vpSaveCost && !sT->SpendVotePoints(player, vpSaveCost))
-                {
-                    ChatHandler(player->GetSession()).SendNotification(LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS);
-                    break;
-                }
-                if (cost)
-                    player->ModifyMoney(-cost);
-
-                std::ostringstream ss;
+                std::string const serialized = SerializeSavedOutfit(items);
                 for (auto const& [savedSlot, savedEntry] : items)
-                {
-                    ss << uint32(savedSlot) << ' ' << savedEntry << ' ';
                     sT->presetById[player->GetGUID()][presetID][savedSlot] = savedEntry;
-                }
                 sT->presetByName[player->GetGUID()][presetID] = name;
                 std::string escapedName = name;
                 CharacterDatabase.EscapeString(escapedName);
-                CharacterDatabase.Execute("REPLACE INTO `custom_transmogrification_sets` (`Owner`, `PresetID`, `SetName`, `SetData`) VALUES ({}, {}, \"{}\", \"{}\")", player->GetGUID().GetCounter(), uint32(presetID), escapedName, ss.str());
+                CharacterDatabase.Execute(
+                    "INSERT INTO `custom_transmogrification_sets` (`Owner`,`PresetID`,`SetName`,`SetData`,`CreatedAt`,`UpdatedAt`,`DataVersion`) "
+                    "VALUES ({},{},'{}','{}',UNIX_TIMESTAMP(),UNIX_TIMESTAMP(),1) "
+                    "ON DUPLICATE KEY UPDATE `SetName`='{}',`SetData`='{}',`UpdatedAt`=UNIX_TIMESTAMP(),`DataVersion`=1",
+                    player->GetGUID().GetCounter(), uint32(presetID), escapedName, serialized, escapedName, serialized);
                 break;
             }
         }
@@ -1234,10 +1572,9 @@ public:
                     else
                     {
                         // Add invisible item entry
-                        std::string hideConfirm = GetLocaleText(locale, "confirm_hide_item") + lineEnd;
-                        if (existingTransmog)
-                            hideConfirm += "\n\n|cffffcc00This will replace the currently applied appearance.|r";
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|t" + GetLocaleText(locale, "hide_slot"), slot, UINT_MAX, hideConfirm, 0, false);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                            "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|tPreview Hidden Slot",
+                            slot, UINT_MAX);
                     }
                 }
                 for (uint32 i = startValue; i <= endValue; i++)
@@ -1302,7 +1639,7 @@ public:
                             }
                         }
 
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, lineText, slot, newItem->ItemId, confirmText, boxMoney, false);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, lineText + "  |cffffcc00— Preview|r", slot, newItem->ItemId);
                     }
                 }
             }
@@ -1328,7 +1665,7 @@ public:
             }
 
             if (existingTransmog)
-                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 3, slot, GetLocaleText(locale, "remove_transmog_slot"), 0, false);
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|tPreview Original Appearance", EQUIPMENT_SLOT_END + 3, slot);
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
         }
         else
@@ -1474,17 +1811,17 @@ public:
 class PS_Transmogrification : public PlayerScript
 {
 private:
-    void AddToDatabase(Player* player, Item* item)
+    void AddToDatabase(Player* player, Item* item, std::string const& source)
     {
         if (item->HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_BOP_TRADEABLE) && !sTransmogrification->GetAllowTradeable())
             return;
         if (item->HasFlag(ITEM_FIELD_FLAGS, ITEM_FIELD_FLAG_REFUNDABLE))
             return;
         ItemTemplate const* itemTemplate = item->GetTemplate();
-        AddToDatabase(player, itemTemplate);
+        AddToDatabase(player, itemTemplate, source);
     }
 
-    void AddToDatabase(Player* player, ItemTemplate const* itemTemplate)
+    void AddToDatabase(Player* player, ItemTemplate const* itemTemplate, std::string source)
     {
         LocaleConstant locale = player->GetSession()->GetSessionDbLocaleIndex();
         if (!sT->GetTrackUnusableItems() && !sT->SuitableForTransmogrification(player, itemTemplate))
@@ -1510,27 +1847,48 @@ private:
             if (showChatMessage)
                 ChatHandler(player->GetSession()).PSendSysMessage( R"(|c{}|Hitem:{}:0:0:0:0:0:0:0:0|h[{}]|h|r {})", itemQuality, itemId, itemName, GetLocaleText(locale, "added_appearance"));
 
-            CharacterDatabase.Execute( "INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
+            CharacterDatabase.EscapeString(source);
+            CharacterDatabase.Execute(
+                "INSERT INTO custom_unlocked_appearances "
+                "(account_id, owner_guid, item_template_id, discovered_at, first_discovered_at, last_discovered_at, discovery_source, legacy_discovery) "
+                "VALUES ({}, {}, {}, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), '{}', 0) "
+                "ON DUPLICATE KEY UPDATE `account_id`={},`last_discovered_at`=UNIX_TIMESTAMP(),"
+                "`discovery_source`=IF(`legacy_discovery`=1,'{}',`discovery_source`),`legacy_discovery`=0",
+                accountId, ownerGuid, itemId, source, accountId, source);
         }
     }
 
-    void CheckRetroActiveQuestAppearances(Player* player)
+    void CheckRetroActiveOwnedAppearances(Player* player)
     {
-        const RewardedQuestSet& rewQuests = player->getRewardedQuests();
-        for (RewardedQuestSet::const_iterator itr = rewQuests.begin(); itr != rewQuests.end(); ++itr)
-        {
-            Quest const* quest = sObjectMgr->GetQuestTemplate(*itr);
-            OnPlayerCompleteQuest(player, quest);
-        }
+        if (!player) return;
+        for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+            if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                AddToDatabase(player, item, "retroactive-owned");
+        for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                AddToDatabase(player, item, "retroactive-owned");
+        for (uint8 bagSlot = INVENTORY_SLOT_BAG_START; bagSlot < INVENTORY_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = player->GetBagByPos(bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    if (Item* item = player->GetItemByPos(bagSlot, slot))
+                        AddToDatabase(player, item, "retroactive-owned");
+        for (uint8 slot = BANK_SLOT_ITEM_START; slot < BANK_SLOT_ITEM_END; ++slot)
+            if (Item* item = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                AddToDatabase(player, item, "retroactive-bank");
+        for (uint8 bagSlot = BANK_SLOT_BAG_START; bagSlot < BANK_SLOT_BAG_END; ++bagSlot)
+            if (Bag* bag = player->GetBagByPos(bagSlot))
+                for (uint32 slot = 0; slot < bag->GetBagSize(); ++slot)
+                    if (Item* item = player->GetItemByPos(bagSlot, slot))
+                        AddToDatabase(player, item, "retroactive-bank");
         player->UpdatePlayerSetting("mod-transmog", SETTING_RETROACTIVE_CHECK, 1);
     }
+
 public:
     PS_Transmogrification() : PlayerScript("Player_Transmogrify", {
         PLAYERHOOK_ON_EQUIP,
         PLAYERHOOK_ON_LOOT_ITEM,
         PLAYERHOOK_ON_CREATE_ITEM,
         PLAYERHOOK_ON_AFTER_STORE_OR_EQUIP_NEW_ITEM,
-        PLAYERHOOK_ON_PLAYER_COMPLETE_QUEST,
         PLAYERHOOK_ON_AFTER_SET_VISIBLE_ITEM_SLOT,
         PLAYERHOOK_ON_AFTER_MOVE_ITEM_FROM_INVENTORY,
         PLAYERHOOK_ON_LOGIN,
@@ -1542,7 +1900,7 @@ public:
     {
         if (!sT->GetUseCollectionSystem())
             return;
-        AddToDatabase(player, it);
+        AddToDatabase(player, it, "equip");
     }
 
     void OnPlayerLootItem(Player* player, Item* item, uint32 /*count*/, ObjectGuid /*lootguid*/) override
@@ -1551,7 +1909,7 @@ public:
             return;
         if (item->GetTemplate()->Bonding == ItemBondingType::BIND_WHEN_PICKED_UP || item->IsSoulBound())
         {
-            AddToDatabase(player, item);
+            AddToDatabase(player, item, "loot");
         }
     }
 
@@ -1561,42 +1919,18 @@ public:
             return;
         if (item->GetTemplate()->Bonding == ItemBondingType::BIND_WHEN_PICKED_UP || item->IsSoulBound())
         {
-            AddToDatabase(player, item);
+            AddToDatabase(player, item, "crafted");
         }
     }
 
-    void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 /*count*/, uint8 /*bag*/, uint8 /*slot*/, ItemTemplate const* /*pProto*/, Creature* /*pVendor*/, VendorItem const* /*crItem*/, bool /*bStore*/) override
+    void OnPlayerAfterStoreOrEquipNewItem(Player* player, uint32 /*vendorslot*/, Item* item, uint8 /*count*/, uint8 /*bag*/, uint8 /*slot*/, ItemTemplate const* /*pProto*/, Creature* pVendor, VendorItem const* /*crItem*/, bool /*bStore*/) override
     {
         if (!sT->GetUseCollectionSystem())
             return;
         if (item->GetTemplate()->Bonding == ItemBondingType::BIND_WHEN_PICKED_UP || item->IsSoulBound())
-        {
-            AddToDatabase(player, item);
-        }
+            AddToDatabase(player, item, pVendor ? "purchase" : "acquired");
     }
 
-    void OnPlayerCompleteQuest(Player* player, Quest const* quest) override
-    {
-        if (!sT->GetUseCollectionSystem() || !quest)
-            return;
-        for (uint8 i = 0; i < QUEST_REWARD_CHOICES_COUNT; ++i)
-        {
-            uint32 itemId = uint32(quest->RewardChoiceItemId[i]);
-            if (!itemId)
-                continue;
-            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(itemId);
-            AddToDatabase(player, itemTemplate);
-        }
-
-        for (uint8 i = 0; i < QUEST_REWARDS_COUNT; ++i)
-        {
-            uint32 itemId = uint32(quest->RewardItemId[i]);
-            if (!itemId)
-                continue;
-            ItemTemplate const* itemTemplate = sObjectMgr->GetItemTemplate(itemId);
-            AddToDatabase(player, itemTemplate);
-        }
-    }
 
     void OnPlayerAfterSetVisibleItemSlot(Player* player, uint8 slot, Item *item) override
     {
@@ -1620,7 +1954,7 @@ public:
             player->UpdatePlayerSetting("mod-transmog", SETTING_RETROACTIVE_CHECK, 0);
 
         if (sT->EnableRetroActiveAppearances() && !(player->GetPlayerSetting("mod-transmog", SETTING_RETROACTIVE_CHECK).value))
-            CheckRetroActiveQuestAppearances(player);
+            CheckRetroActiveOwnedAppearances(player);
 
         ObjectGuid playerGUID = player->GetGUID();
         sT->entryMap.erase(playerGUID);
@@ -1653,6 +1987,7 @@ public:
 
     void OnPlayerLogout(Player* player) override
     {
+        sT->ClearOutfitDraft(player);
         ObjectGuid pGUID = player->GetGUID();
         for (Transmogrification::transmog2Data::const_iterator it = sT->entryMap[pGUID].begin(); it != sT->entryMap[pGUID].end(); ++it)
             sT->dataMap.erase(it->first);

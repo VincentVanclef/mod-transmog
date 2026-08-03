@@ -15,6 +15,8 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#include <map>
+#include <string>
 
 #define PRESETS // comment this line to disable preset feature totally
 #define HIDDEN_ITEM_ID 1 // used for hidden transmog - do not use a valid equipment ID
@@ -134,6 +136,27 @@ public:
     transmogData dataMap; // dataMap[iGUID] = pGUID
     collectionCacheMap collectionCache;
     selectedSlotMap selectionCache;
+
+    struct OutfitDraftSlot
+    {
+        uint8 slot = 0;
+        uint32 targetGuid = 0;
+        uint32 targetEntry = 0;
+        uint32 appearanceEntry = 0; // 0 removes an applied appearance; HIDDEN_ITEM_ID hides the slot.
+    };
+
+    struct OutfitCostSummary
+    {
+        uint64 copper = 0;
+        uint32 votePoints = 0;
+        uint32 tokens = 0;
+        uint32 changedSlots = 0;
+        bool freeOutfit = false;
+    };
+
+    typedef std::map<uint8, OutfitDraftSlot> outfitDraft;
+    typedef std::unordered_map<uint32, outfitDraft> outfitDraftMap;
+    outfitDraftMap outfitDraftByGuid;
 
 #ifdef PRESETS
     bool EnableSetInfo;
@@ -263,8 +286,16 @@ public:
     uint32 GetFakeEntry(ObjectGuid itemGUID) const;
     void UpdateItem(Player* player, Item* item) const;
     void DeleteFakeEntry(Player* player, uint8 slot, Item* itemTransmogrified, CharacterDatabaseTransaction* trans = nullptr);
-    void SetFakeEntry(Player* player, uint32 newEntry, uint8 slot, Item* itemTransmogrified);
+    void SetFakeEntry(Player* player, uint32 newEntry, uint8 slot, Item* itemTransmogrified, CharacterDatabaseTransaction* trans = nullptr);
     bool AddCollectedAppearance(uint32 ownerGuid, uint32 itemId);
+    bool CharacterCanUseAppearance(Player* player, uint32 itemEntry) const;
+
+    bool StageOutfitAppearance(Player* player, uint8 slot, uint32 appearanceEntry, std::string& error);
+    bool StageSavedOutfit(Player* player, std::map<uint8, uint32> const& appearances, std::string& error);
+    bool ClearOutfitDraft(Player* player);
+    outfitDraft const* GetOutfitDraft(Player const* player) const;
+    OutfitCostSummary CalculateOutfitCost(Player* player, std::string* error = nullptr) const;
+    bool ApplyOutfitDraft(Player* player, std::string& result);
 
     TransmogAcoreStrings Transmogrify(Player* player, ObjectGuid itemGUID, uint8 slot, /*uint32 newEntry, */bool no_cost = false);
     TransmogAcoreStrings Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost = false);

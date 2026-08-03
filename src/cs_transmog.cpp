@@ -174,7 +174,7 @@ public:
             if (isNotConsole && target != handler->GetPlayer())
                 handler->PSendSysMessage(R"(|c{}|Hitem:{}:0:0:0:0:0:0:0:0|h[{}]|h|r has been added to the appearance collection of Player {}.)", itemQuality.c_str(), itemId, itemName.c_str(), nameLink);
 
-            CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
+            CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id, discovered_at, first_discovered_at, last_discovered_at, discovery_source, legacy_discovery) VALUES ({}, {}, {}, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 'gm', 0) ON DUPLICATE KEY UPDATE account_id={}, last_discovered_at=UNIX_TIMESTAMP(), discovery_source='gm', legacy_discovery=0", accountId, ownerGuid, itemId, accountId);
         }
         else
         {
@@ -253,7 +253,7 @@ public:
 
                     if (sTransmogrification->AddCollectedAppearance(ownerGuid, itemId))
                     {
-                        CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
+                        CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id, discovered_at, first_discovered_at, last_discovered_at, discovery_source, legacy_discovery) VALUES ({}, {}, {}, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 'gm', 0) ON DUPLICATE KEY UPDATE account_id={}, last_discovered_at=UNIX_TIMESTAMP(), discovery_source='gm', legacy_discovery=0", accountId, ownerGuid, itemId, accountId);
                         added = true;
                     }
                 }

@@ -10,6 +10,7 @@
 #include <ctime>
 #include <memory>
 #include <limits>
+#include <utility>
 
 Transmogrification* Transmogrification::instance()
 {
@@ -76,7 +77,7 @@ void Transmogrification::LoadPlayerSets(ObjectGuid pGUID)
                     LOG_ERROR("module", "Item entry (FakeEntry: {}, player: {}, slot: {}, presetId: {}) has invalid slot, ignoring.", entry, pGUID.ToString(), slot, PresetID);
                     continue;
                 }
-                if (entry == HIDDEN_ITEM_ID || sObjectMgr->GetItemTemplate(entry))
+                if (entry == 0 || entry == HIDDEN_ITEM_ID || sObjectMgr->GetItemTemplate(entry))
                     presetById[pGUID][PresetID][slot] = entry; // Transmogrification::Preset(presetName, fakeEntry);
             }
 
@@ -470,7 +471,7 @@ void Transmogrification::DeleteFakeEntry(Player* player, uint8 /*slot*/, Item* i
     UpdateItem(player, itemTransmogrified);
 }
 
-void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified)
+void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified, CharacterDatabaseTransaction* trans)
 {
     ObjectGuid itemGUID = itemTransmogrified->GetGUID();
     ObjectGuid playerGUID = player->GetGUID();
@@ -488,7 +489,10 @@ void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*s
 
     entryMap[playerGUID][itemGUID] = newEntry;
     dataMap[itemGUID] = playerGUID;
-    CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
+    if (trans)
+        (*trans)->Append("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
+    else
+        CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
     UpdateItem(player, itemTransmogrified);
 }
 
@@ -504,8 +508,332 @@ bool Transmogrification::AddCollectedAppearance(uint32 ownerGuid, uint32 itemId)
     return res.second;
 }
 
+bool Transmogrification::CharacterCanUseAppearance(Player* player, uint32 itemEntry) const
+{
+    if (!player || !itemEntry)
+        return false;
+    if (itemEntry == HIDDEN_ITEM_ID || itemEntry == UINT_MAX)
+        return GetAllowHiddenTransmog();
+
+    uint32 const ownerGuid = player->GetGUID().GetCounter();
+    auto const collectionItr = collectionCache.find(ownerGuid);
+    if (collectionItr != collectionCache.end() && collectionItr->second.contains(itemEntry))
+        return true;
+
+    // With character Appearance Memory enabled, the collection is authoritative.
+    // Acquisition hooks populate the cache before their asynchronous database write,
+    // so crafted, looted, purchased, equipped, and stored items are immediately usable
+    // without permitting another character's bank or a forged gossip action to bypass discovery.
+    if (GetUseCollectionSystem())
+        return false;
+
+    // Collection-disabled deployments retain the original physical-item behavior.
+    return player->HasItemCount(itemEntry, 1, true);
+}
+
+bool Transmogrification::StageOutfitAppearance(Player* player, uint8 slot, uint32 appearanceEntry, std::string& error)
+{
+    error.clear();
+    if (!player || slot >= EQUIPMENT_SLOT_END)
+    {
+        error = "That outfit slot is invalid.";
+        return false;
+    }
+
+    Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+    if (!target)
+    {
+        error = "Equip an item in that slot before previewing an appearance.";
+        return false;
+    }
+
+    uint32 normalized = appearanceEntry == UINT_MAX ? HIDDEN_ITEM_ID : appearanceEntry;
+    if (normalized == HIDDEN_ITEM_ID)
+    {
+        if (!AllowHiddenTransmog)
+        {
+            error = "That slot cannot be hidden right now.";
+            return false;
+        }
+    }
+    else if (normalized != 0)
+    {
+        if (!CharacterCanUseAppearance(player, normalized))
+        {
+            error = "That appearance has not been discovered by this character.";
+            return false;
+        }
+
+        ItemTemplate const* source = sObjectMgr->GetItemTemplate(normalized);
+        if (!source || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source))
+        {
+            error = "That appearance is not compatible with the equipped item.";
+            return false;
+        }
+    }
+
+    uint32 const current = GetFakeEntry(target->GetGUID());
+    uint32 const ownerGuid = player->GetGUID().GetCounter();
+    if (current == normalized)
+    {
+        if (auto ownerItr = outfitDraftByGuid.find(ownerGuid); ownerItr != outfitDraftByGuid.end())
+        {
+            ownerItr->second.erase(slot);
+            if (ownerItr->second.empty())
+                outfitDraftByGuid.erase(ownerItr);
+        }
+        return true;
+    }
+
+    outfitDraftByGuid[ownerGuid][slot] = {
+        slot,
+        target->GetGUID().GetCounter(),
+        target->GetEntry(),
+        normalized
+    };
+    return true;
+}
+
+bool Transmogrification::StageSavedOutfit(Player* player, std::map<uint8, uint32> const& appearances, std::string& error)
+{
+    error.clear();
+    if (!player || appearances.empty())
+    {
+        error = "That saved outfit is empty.";
+        return false;
+    }
+
+    uint32 const ownerGuid = player->GetGUID().GetCounter();
+    outfitDraft previous;
+    if (auto itr = outfitDraftByGuid.find(ownerGuid); itr != outfitDraftByGuid.end())
+        previous = itr->second;
+    outfitDraftByGuid.erase(ownerGuid);
+
+    for (auto const& [slot, entry] : appearances)
+    {
+        if (!StageOutfitAppearance(player, slot, entry, error))
+        {
+            if (previous.empty())
+                outfitDraftByGuid.erase(ownerGuid);
+            else
+                outfitDraftByGuid[ownerGuid] = std::move(previous);
+            return false;
+        }
+    }
+
+    if (!GetOutfitDraft(player))
+    {
+        error = "That saved outfit is already active.";
+        return false;
+    }
+    return true;
+}
+
+bool Transmogrification::ClearOutfitDraft(Player* player)
+{
+    return player && outfitDraftByGuid.erase(player->GetGUID().GetCounter()) > 0;
+}
+
+Transmogrification::outfitDraft const* Transmogrification::GetOutfitDraft(Player const* player) const
+{
+    if (!player)
+        return nullptr;
+    auto itr = outfitDraftByGuid.find(player->GetGUID().GetCounter());
+    return itr == outfitDraftByGuid.end() || itr->second.empty() ? nullptr : &itr->second;
+}
+
+Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Player* player, std::string* error) const
+{
+    OutfitCostSummary summary;
+    if (error)
+        error->clear();
+
+    outfitDraft const* draft = GetOutfitDraft(player);
+    if (!player || !draft)
+    {
+        if (error)
+            *error = "No outfit changes are being previewed.";
+        return summary;
+    }
+
+    auto fail = [&](std::string const& message)
+    {
+        if (error && error->empty())
+            *error = message;
+    };
+
+    auto slotCopper = [this](ItemTemplate const* target) -> uint64
+    {
+        if (!target)
+            return 0;
+        double const total = double(GetSpecialPrice(target)) * double(ScaledCostModifier) + double(CopperCost);
+        if (!std::isfinite(total) || total <= 0.0)
+            return 0;
+        return uint64(std::min<double>(std::ceil(total), double(std::numeric_limits<int64>::max())));
+    };
+
+    auto slotVotePoints = [this](uint64 copper) -> uint64
+    {
+        uint64 value = VotePointsFlatCost;
+        if (copper && VotePointsPerGold > 0.0f)
+        {
+            double const scaled = std::ceil((double(copper) / 10000.0) * double(VotePointsPerGold));
+            if (!std::isfinite(scaled))
+                return uint64(std::numeric_limits<uint32>::max()) + 1ULL;
+            value += uint64(std::max(0.0, scaled));
+        }
+        return value;
+    };
+
+    uint64 votePoints = 0;
+    uint64 tokens = 0;
+    for (auto const& [slot, staged] : *draft)
+    {
+        Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!target || target->GetGUID().GetCounter() != staged.targetGuid || target->GetEntry() != staged.targetEntry)
+        {
+            fail("Equipment changed after the outfit was previewed. Reopen the affected slot and choose its appearance again.");
+            return summary;
+        }
+
+        uint32 const appearance = staged.appearanceEntry;
+        uint32 const current = GetFakeEntry(target->GetGUID());
+        if (appearance == current)
+            continue;
+
+        if (appearance == HIDDEN_ITEM_ID)
+        {
+            if (!AllowHiddenTransmog)
+            {
+                fail("One previewed slot can no longer be hidden.");
+                return summary;
+            }
+        }
+        else if (appearance != 0)
+        {
+            ItemTemplate const* source = sObjectMgr->GetItemTemplate(appearance);
+            if (!CharacterCanUseAppearance(player, appearance) || !source
+                || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source))
+            {
+                fail("One previewed appearance is no longer owned or compatible.");
+                return summary;
+            }
+        }
+
+        ++summary.changedSlots;
+        bool const chargeAppearance = appearance != 0
+            && !(appearance == HIDDEN_ITEM_ID && HiddenTransmogIsFree);
+        if (!chargeAppearance)
+            continue;
+
+        uint64 const copper = slotCopper(target->GetTemplate());
+        if (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
+            summary.copper += copper;
+        if (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
+            votePoints += slotVotePoints(copper);
+        if (RequireToken)
+            tokens += TokenAmount;
+    }
+
+    if (votePoints > std::numeric_limits<uint32>::max() || tokens > std::numeric_limits<uint32>::max())
+    {
+        fail("The outfit cost is outside the supported range.");
+        return OutfitCostSummary{};
+    }
+
+    summary.votePoints = uint32(votePoints);
+    summary.tokens = uint32(tokens);
+    bool const wouldCharge = summary.copper > 0 || summary.votePoints > 0 || summary.tokens > 0;
+    summary.freeOutfit = wouldCharge && HasFreeTransmogReady(player);
+    if (summary.freeOutfit)
+    {
+        summary.copper = 0;
+        summary.votePoints = 0;
+        summary.tokens = 0;
+    }
+    return summary;
+}
+
+bool Transmogrification::ApplyOutfitDraft(Player* player, std::string& result)
+{
+    result.clear();
+    std::string error;
+    OutfitCostSummary const cost = CalculateOutfitCost(player, &error);
+    if (!error.empty())
+    {
+        result = error;
+        return false;
+    }
+    if (!cost.changedSlots)
+    {
+        result = "The preview does not contain any appearance changes.";
+        return false;
+    }
+    if (cost.copper > uint64(std::numeric_limits<int64>::max()) || !player->HasEnoughMoney(int64(cost.copper)))
+    {
+        result = "You do not have enough money for the complete outfit.";
+        return false;
+    }
+    if (cost.votePoints && !HasVotePoints(player, cost.votePoints))
+    {
+        result = "You do not have enough Vote Points for the complete outfit.";
+        return false;
+    }
+    if (cost.tokens && !player->HasItemCount(TokenEntry, cost.tokens))
+    {
+        result = "You do not have enough transmog tokens for the complete outfit.";
+        return false;
+    }
+
+    uint32 const ownerGuid = player->GetGUID().GetCounter();
+    outfitDraft const draft = outfitDraftByGuid[ownerGuid];
+    CharacterDatabaseTransaction transaction = CharacterDatabase.BeginTransaction();
+    for (auto const& [slot, staged] : draft)
+    {
+        Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!target || GetFakeEntry(target->GetGUID()) == staged.appearanceEntry)
+            continue;
+        if (staged.appearanceEntry == 0)
+            DeleteFakeEntry(player, slot, target, &transaction);
+        else
+            SetFakeEntry(player, staged.appearanceEntry, slot, target, &transaction);
+
+        target->UpdatePlayedTime(player);
+        target->SetNotRefundable(player);
+        target->ClearSoulboundTradeable(player);
+    }
+    // Commit every appearance row together before consuming the already validated
+    // combined payment. AzerothCore stores gold, items, Vote Points, and appearance
+    // rows through different runtime/storage paths, so a single cross-store SQL
+    // transaction is not possible; synchronous commit plus full prevalidation is the
+    // safest player-first ordering and prevents partial slot application.
+    CharacterDatabase.DirectCommitTransaction(transaction);
+
+    if (cost.votePoints && !SpendVotePoints(player, cost.votePoints))
+    {
+        // This should be unreachable after same-thread validation. Keep the failure
+        // explicit in logs rather than pretending the charge succeeded.
+        LOG_ERROR("module", "RTG Transmog: validated Vote Point charge failed after outfit commit for character {}.", ownerGuid);
+    }
+    if (cost.tokens)
+        player->DestroyItemCount(TokenEntry, cost.tokens, true);
+    if (cost.copper)
+        player->ModifyMoney(-int64(cost.copper), false);
+    if (cost.freeOutfit)
+        MarkFreeTransmogUsed(player);
+    outfitDraftByGuid.erase(ownerGuid);
+
+    result = "Applied " + std::to_string(cost.changedSlots) + " outfit change";
+    if (cost.changedSlots != 1)
+        result += "s";
+    result += " as one complete outfit.";
+    return true;
+}
+
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost) {
-    if (itemEntry == UINT_MAX) // Hidden transmog
+    if (itemEntry != UINT_MAX && itemEntry != HIDDEN_ITEM_ID && !CharacterCanUseAppearance(player, itemEntry))
+        return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
+    if (itemEntry == UINT_MAX || itemEntry == HIDDEN_ITEM_ID) // Hidden transmog
     {
         return Transmogrify(player, nullptr, slot, no_cost, true);
     }

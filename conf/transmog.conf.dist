@@ -42,8 +42,10 @@
 #        Default:     1
 #
 #    Transmogrification.RetroActiveAppearances
-#        Description: Enables/Disables checking all completed quests for uncollected appearances.
-#                     Occurs only once per player.
+#        Description: Enables/Disables one safe scan of the character's currently owned
+#                     equipped and bag items for uncollected appearances. Completed quests
+#                     are not used because unchosen quest rewards were never owned.
+#                     Occurs only once per character unless the reset flag is enabled.
 #        Default:    1
 #
 #    Transmogrification.ResetRetroActiveAppearancesFlag
@@ -161,8 +163,8 @@ Transmogrification.VotePointsPerGold = 0.0
 #    FREE TRANSMOG COOLDOWN
 #
 #    Transmogrification.FreeCooldown.Enable
-#        Description: Gives each character one paid transmog execution for free when their cooldown is ready.
-#                     A free use skips the configured token/gold/vote-point cost for that one item.
+#        Description: Gives each character one complete confirmed outfit application for free when ready.
+#                     Previewing and saving outfits never consumes the free use.
 #        Default:     1
 #
 #    Transmogrification.FreeCooldown.Minutes
@@ -174,10 +176,10 @@ Transmogrification.FreeCooldown.Enable = 1
 Transmogrification.FreeCooldown.Minutes = 90
 
 #
-# Vote Point costs for transmog sets
-#
-Transmogrification.SetSaveVotePoints = 20
-Transmogrification.SetApplyVotePoints = 5
+# Retired Saved Outfit compatibility values. Saving an outfit is free and applying
+# it uses the same combined review and payment rules as a manually built preview.
+Transmogrification.SetSaveVotePoints = 0
+Transmogrification.SetApplyVotePoints = 0
 
 #
 #    REQUIREMENTS
@@ -319,12 +321,9 @@ Transmogrification.IgnoreReqStats = 0
 #        Description: The npc_text entry of the info menu for the set feature
 #        Default:    601084
 #
-#    Transmogrification.SetCostModifier
-#        Description: A multiplier for the default gold cost (all costs summed together) (change to 0 for no default cost)
-#        Default:    3.0
-#
-#    Transmogrification.SetCopperCost
-#        Description: Cost added on top of other costs (can be negative)
+#    Transmogrification.SetCostModifier / SetCopperCost
+#        Description: Retired Saved Outfit compatibility values. Outfit application
+#                     uses the normal combined Transmog Studio confirmation.
 #        Default:    0
 
 Transmogrification.EnableSets = 1
@@ -333,7 +332,7 @@ Transmogrification.MaxSets = 10
 Transmogrification.EnableSetInfo = 1
 Transmogrification.SetNpcText = 601084
 
-Transmogrification.SetCostModifier = 3.0
+Transmogrification.SetCostModifier = 0.0
 Transmogrification.SetCopperCost = 0
 
 #
