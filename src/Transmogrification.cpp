@@ -769,7 +769,7 @@ bool Transmogrification::ApplyOutfitDraft(Player* player, std::string& result)
         result = "The preview does not contain any appearance changes.";
         return false;
     }
-    if (cost.copper > uint64(std::numeric_limits<int64>::max()) || !player->HasEnoughMoney(int64(cost.copper)))
+    if (cost.copper > uint64(std::numeric_limits<uint32>::max()) || !player->HasEnoughMoney(uint32(cost.copper)))
     {
         result = "You do not have enough money for the complete outfit.";
         return false;
