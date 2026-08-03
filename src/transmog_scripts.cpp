@@ -46,25 +46,17 @@ static inline uint32 DecodeTransmogCodeSender(uint32 sender) { return sender >= 
 
 static constexpr uint32 RTG_SCOREBOARD_MENU_ID = 10000;
 // PlayerGossip_Scoreboard sender IDs are stable and intentionally preserved.
-static constexpr uint32 RTG_SCOREBOARD_REALM_UTILITIES_SENDER = 23;
-static constexpr uint32 RTG_SCOREBOARD_SHOP_SENDER = 24;
+static constexpr uint32 RTG_SCOREBOARD_COSMETICS_SENDER = 152;
 static constexpr uint32 TRANSMOG_SCOREBOARD_RETURN_SENDER = 250;
 
-static uint32 GetRewardsServicesSender()
-{
-    return sConfigMgr->GetOption<bool>("RTG.Scoreboard.Menu.CombineShopServices", true)
-        ? RTG_SCOREBOARD_SHOP_SENDER
-        : RTG_SCOREBOARD_REALM_UTILITIES_SENDER;
-}
-
-static void OpenRTGScoreboardRewardsServices(Player* player)
+static void OpenRTGScoreboardCosmetics(Player* player)
 {
     if (!player || !player->GetSession())
         return;
 
     player->PlayerTalkClass->ClearMenus();
     CloseGossipMenuFor(player);
-    sPlayerGossipMgr->ShowGossipMenu(player, RTG_SCOREBOARD_MENU_ID, GetRewardsServicesSender(), 0);
+    sPlayerGossipMgr->ShowGossipMenu(player, RTG_SCOREBOARD_MENU_ID, RTG_SCOREBOARD_COSMETICS_SENDER, 0);
 }
 
 static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
@@ -192,15 +184,15 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK = {
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_BACK_TO_SCOREBOARD = {
-    {LOCALE_enUS, "Return to Rewards & Services"},
-    {LOCALE_koKR, "Return to Rewards & Services"},
-    {LOCALE_frFR, "Return to Rewards & Services"},
-    {LOCALE_deDE, "Return to Rewards & Services"},
-    {LOCALE_zhCN, "Return to Rewards & Services"},
-    {LOCALE_zhTW, "Return to Rewards & Services"},
-    {LOCALE_esES, "Return to Rewards & Services"},
-    {LOCALE_esMX, "Return to Rewards & Services"},
-    {LOCALE_ruRU, "Return to Rewards & Services"}
+    {LOCALE_enUS, "Return to Cosmetics"},
+    {LOCALE_koKR, "Return to Cosmetics"},
+    {LOCALE_frFR, "Return to Cosmetics"},
+    {LOCALE_deDE, "Return to Cosmetics"},
+    {LOCALE_zhCN, "Return to Cosmetics"},
+    {LOCALE_zhTW, "Return to Cosmetics"},
+    {LOCALE_esES, "Return to Cosmetics"},
+    {LOCALE_esMX, "Return to Cosmetics"},
+    {LOCALE_ruRU, "Return to Cosmetics"}
 };
 
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_USESET = {
@@ -742,7 +734,7 @@ public:
 
         if (sender == TRANSMOG_SCOREBOARD_RETURN_SENDER)
         {
-            OpenRTGScoreboardRewardsServices(player);
+            OpenRTGScoreboardCosmetics(player);
             return true;
         }
 
