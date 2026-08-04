@@ -57,6 +57,7 @@ static constexpr uint32 TRANSMOG_TROPHY_SENDER = 243;
 static constexpr uint32 TRANSMOG_OUTFIT_UPDATE_SENDER = 244;
 static constexpr uint32 TRANSMOG_TROPHY_SOURCE_SENDER = 245;
 static constexpr uint32 TRANSMOG_OUTFIT_CLEAN_SENDER = 246;
+static constexpr uint32 TRANSMOG_OUTFIT_REVERT_SLOT_SENDER = 247;
 static constexpr uint32 TRANSMOG_TROPHY_PAGE_SIZE = 20;
 
 static std::string FormatTrophyDate(uint32 timestamp)
@@ -90,6 +91,12 @@ static ObjectGuid GetTransmogMenuGuid(Player* player, Creature* creature)
     return creature ? creature->GetGUID() : player->GetGUID();
 }
 
+static std::string GetRtgTransmogActionMarker(std::string const& action, uint32 slot = 0u, uint32 value = 0u)
+{
+    return " |cff010101[RTGTMOGACTION:" + action + ":"
+        + std::to_string(slot) + ":" + std::to_string(value) + "]|r";
+}
+
 static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
 {
     if (!player)
@@ -98,7 +105,9 @@ static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
     Item* targetItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     uint32 targetEntry = targetItem ? targetItem->GetEntry() : 0u;
     uint32 fakeEntry = targetItem ? sT->GetFakeEntry(targetItem->GetGUID()) : 0u;
-    uint32 visualEntry = fakeEntry && fakeEntry != HIDDEN_ITEM_ID ? fakeEntry : targetEntry;
+    // A currently hidden slot must publish a zero visual entry so RTG_Core
+    // clears that exact model slot instead of redressing the equipped target.
+    uint32 visualEntry = fakeEntry == HIDDEN_ITEM_ID ? 0u : (fakeEntry ? fakeEntry : targetEntry);
     uint32 visualQuality = 0u;
     uint32 draftEntry = 0u;
     uint32 draftMode = 0u; // 0 none, 1 appearance, 2 hidden, 3 remove
@@ -107,6 +116,9 @@ static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
     if (visualEntry)
         if (ItemTemplate const* visualTemplate = sObjectMgr->GetItemTemplate(visualEntry))
             visualQuality = visualTemplate->Quality;
+    if (!visualQuality && targetEntry)
+        if (ItemTemplate const* targetTemplate = sObjectMgr->GetItemTemplate(targetEntry))
+            visualQuality = targetTemplate->Quality;
 
     if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
     {
@@ -1008,11 +1020,14 @@ public:
                 freeText += "|cff00ff00Free Transmog Ready|r";
             else
                 freeText += "|cffffcc00Free Transmog: " + sT->FormatFreeTransmogCooldown(freeRemaining) + " cooldown|r";
+            freeText += GetRtgTransmogActionMarker("free_status");
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, freeText, EQUIPMENT_SLOT_END + 1, 0);
         }
 
         if (sT->GetEnableTransmogInfo())
-            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Misc_Book_11:30:30:-18:0|t" + GetLocaleText(locale, "how_works"), EQUIPMENT_SLOT_END + 9, 0);
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                "|TInterface/ICONS/INV_Misc_Book_11:30:30:-18:0|t" + GetLocaleText(locale, "how_works")
+                    + GetRtgTransmogActionMarker("help"), EQUIPMENT_SLOT_END + 9, 0);
         for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         {
             if (const char* slotName = sT->GetSlotName(slot, session))
@@ -1042,29 +1057,76 @@ public:
                 // and rarity lighting never depend on Scoreboard guesses or an
                 // incompletely cached GetInventoryItem* client call.
                 slotText += GetRtgTransmogSlotStateMarker(player, slot);
+                slotText += GetRtgTransmogActionMarker("slot", uint32(slot + 1));
 
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, slotText, EQUIPMENT_SLOT_END, slot);
             }
         }
         if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
         {
+            std::string outfitError;
+            Transmogrification::OutfitCostSummary outfitCost = sT->CalculateOutfitCost(player, &outfitError);
+            std::string priceText;
+            if (outfitError.empty())
+            {
+                if (outfitCost.freeOutfit)
+                    priceText = "Free outfit use";
+                else
+                {
+                    std::vector<std::string> parts;
+                    if (outfitCost.copper) parts.push_back(FormatOutfitCopper(outfitCost.copper));
+                    if (outfitCost.votePoints) parts.push_back(std::to_string(outfitCost.votePoints) + " VP");
+                    if (outfitCost.tokens) parts.push_back(std::to_string(outfitCost.tokens) + " transmog token" + (outfitCost.tokens == 1 ? "" : "s"));
+                    if (parts.empty()) priceText = "No charge";
+                    else for (std::size_t i = 0; i < parts.size(); ++i)
+                    {
+                        if (i) priceText += " + ";
+                        priceText += parts[i];
+                    }
+                }
+            }
+
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
                 "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Review Outfit Preview|r ("
-                    + std::to_string(draft->size()) + ")" + GetRtgOutfitSummaryMarker(player),
+                    + std::to_string(draft->size()) + ")" + GetRtgOutfitSummaryMarker(player)
+                    + GetRtgTransmogActionMarker("review"),
                 TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
+            if (outfitError.empty() && outfitCost.changedSlots)
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                    "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Complete Outfit|r"
+                        + GetRtgTransmogActionMarker("apply"),
+                    TRANSMOG_OUTFIT_APPLY_SENDER, 0,
+                    "Apply every staged appearance as one complete outfit?\n\n" + priceText,
+                    0, false);
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview",
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview"
+                    + GetRtgTransmogActionMarker("clear"),
                 TRANSMOG_OUTFIT_CLEAR_SENDER, 0);
+#ifdef PRESETS
+            if (sT->GetEnableSets() && sT->presetByName[player->GetGUID()].size() < sT->GetMaxSets())
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                    "|TInterface/GuildBankFrame/UI-GuildBankFrame-NewTab:30:30:-18:0|tSave Preview as Outfit"
+                        + GetRtgTransmogActionMarker("save"),
+                    EncodeTransmogCodeSender(0), 0,
+                    "Name this character-specific outfit. Saving is free and does not apply or purchase it.",
+                    0, true);
+#endif
         }
 #ifdef PRESETS
         if (sT->GetEnableSets())
-            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/RAIDFRAME/UI-RAIDFRAME-MAINASSIST:30:30:-18:0|t" + GetLocaleText(locale, "manage_sets"), EQUIPMENT_SLOT_END + 4, 0);
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/RAIDFRAME/UI-RAIDFRAME-MAINASSIST:30:30:-18:0|t" + GetLocaleText(locale, "manage_sets") + GetRtgTransmogActionMarker("saved"), EQUIPMENT_SLOT_END + 4, 0);
 #endif
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-            "|TInterface/ICONS/INV_Misc_Book_09:30:30:-18:0|tCharacter Trophy Collection",
+            "|TInterface/ICONS/INV_Misc_Book_09:30:30:-18:0|tCharacter Trophy Collection"
+                + GetRtgTransmogActionMarker("trophy"),
             TRANSMOG_TROPHY_SENDER, 1);
-        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog"), EQUIPMENT_SLOT_END + 2, 0, GetLocaleText(locale, "remove_transmog_ask"), 0, false);
-        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END + 1, 0);
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog")
+                + GetRtgTransmogActionMarker("remove_all"),
+            EQUIPMENT_SLOT_END + 2, 0, GetLocaleText(locale, "remove_transmog_ask"), 0, false);
+        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+            "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu")
+                + GetRtgTransmogActionMarker("refresh_root"), EQUIPMENT_SLOT_END + 1, 0);
         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
         return true;
     }
@@ -1111,6 +1173,19 @@ public:
             sT->ClearOutfitDraft(player);
             session->SendAreaTriggerMessage("Outfit preview cleared. Nothing was charged.");
             OnGossipHello(player, creature);
+            return true;
+        }
+        if (sender == TRANSMOG_OUTFIT_REVERT_SLOT_SENDER)
+        {
+            if (action >= EQUIPMENT_SLOT_END)
+            {
+                OnGossipHello(player, creature);
+                return true;
+            }
+            uint8 const slot = uint8(action);
+            if (sT->ClearOutfitDraftSlot(player, slot))
+                session->SendAreaTriggerMessage("Staged slot change reverted. Nothing was charged.");
+            ShowTransmogItemsInGossipMenu(player, creature, slot, EQUIPMENT_SLOT_END);
             return true;
         }
         if (sender == TRANSMOG_TROPHY_SENDER)
@@ -1264,7 +1339,9 @@ public:
                 std::string error;
                 if (!sT->StageOutfitAppearance(player, uint8(action), 0, error))
                     ChatHandler(session).SendSysMessage(error);
-                OnGossipHello(player, creature);
+                else
+                    session->SendAreaTriggerMessage("Original appearance staged. Nothing has been charged.");
+                ShowTransmogItemsInGossipMenu(player, creature, uint8(action), EQUIPMENT_SLOT_END);
             } break;
     #ifdef PRESETS
             case EQUIPMENT_SLOT_END + 4: // Presets menu
@@ -1455,8 +1532,8 @@ public:
                 if (!sT->StageOutfitAppearance(player, uint8(sender), action, error))
                     ChatHandler(session).SendSysMessage(error);
                 else
-                    session->SendAreaTriggerMessage("Appearance added to your outfit preview. Nothing has been charged.");
-                OnGossipHello(player, creature);
+                    session->SendAreaTriggerMessage("Appearance staged. Nothing has been charged.");
+                ShowTransmogItemsInGossipMenu(player, creature, uint8(sender), EQUIPMENT_SLOT_END);
             } break;
         }
         return true;
@@ -1537,13 +1614,16 @@ public:
 
         uint16 pageNumber = 0;
         uint32 startValue = 0;
-        uint32 endValue = MAX_OPTIONS - 4;
+        // Keep enough native rows for search/hide, pagination, slot refresh,
+        // outfit apply/clear, and the return row on every page.
+        uint32 const pageItemCapacity = MAX_OPTIONS > 9 ? MAX_OPTIONS - 9 : 1;
+        uint32 endValue = pageItemCapacity - 1;
         bool lastPage = true;
         if (gossipPageNumber > EQUIPMENT_SLOT_END + 10)
         {
             pageNumber = gossipPageNumber - EQUIPMENT_SLOT_END - 10;
-            startValue = (pageNumber * (MAX_OPTIONS - 2));
-            endValue = (pageNumber + 1) * (MAX_OPTIONS - 2) - 1;
+            startValue = pageNumber * pageItemCapacity;
+            endValue = (pageNumber + 1) * pageItemCapacity - 1;
         }
 
         if (oldItem)
@@ -1570,11 +1650,13 @@ public:
                 {
                     if (hasSearchString)
                     {
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "searching_for") + searchDisplayValue, EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "searching_for") + searchDisplayValue
+                            + GetRtgTransmogActionMarker("search", uint32(slot + 1)), EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
                     }
                     else
                     {
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "search"), EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "search")
+                            + GetRtgTransmogActionMarker("search", uint32(slot + 1)), EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
                     }
                 }
                 else
@@ -1594,7 +1676,8 @@ public:
                     {
                         // Add invisible item entry
                         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                            "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|tPreview Hidden Slot",
+                            "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|tPreview Hidden Slot"
+                                + GetRtgTransmogActionMarker("hide", uint32(slot + 1)),
                             slot, UINT_MAX);
                     }
                 }
@@ -1660,34 +1743,60 @@ public:
                             }
                         }
 
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, lineText + "  |cffffcc00— Preview|r", slot, newItem->ItemId);
+                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                            lineText + "  |cffffcc00— Preview|r"
+                                + GetRtgTransmogActionMarker("stage", uint32(slot + 1), newItem->ItemId),
+                            slot, newItem->ItemId);
                     }
                 }
             }
             if (gossipPageNumber == EQUIPMENT_SLOT_END + 11)
             {
-                AddGossipItemFor(player, GOSSIP_ICON_CHAT, GetLocaleText(locale, "previous_page"), EQUIPMENT_SLOT_END, slot);
+                AddGossipItemFor(player, GOSSIP_ICON_CHAT,
+                    GetLocaleText(locale, "previous_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), 0),
+                    EQUIPMENT_SLOT_END, slot);
                 if (!lastPage)
                 {
-                    AddGossipItemFor(player, GOSSIP_ICON_CHAT, GetLocaleText(locale, "next_page"), gossipPageNumber + 1, slot);
+                    AddGossipItemFor(player, GOSSIP_ICON_CHAT,
+                        GetLocaleText(locale, "next_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), gossipPageNumber + 1),
+                        gossipPageNumber + 1, slot);
                 }
             }
             else if (gossipPageNumber > EQUIPMENT_SLOT_END + 11)
             {
-                AddGossipItemFor(player, GOSSIP_ICON_CHAT, GetLocaleText(locale, "previous_page"), gossipPageNumber - 1, slot);
+                AddGossipItemFor(player, GOSSIP_ICON_CHAT,
+                    GetLocaleText(locale, "previous_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), gossipPageNumber - 1),
+                    gossipPageNumber - 1, slot);
                 if (!lastPage)
                 {
-                    AddGossipItemFor(player, GOSSIP_ICON_CHAT, GetLocaleText(locale, "next_page"), gossipPageNumber + 1, slot);
+                    AddGossipItemFor(player, GOSSIP_ICON_CHAT,
+                        GetLocaleText(locale, "next_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), gossipPageNumber + 1),
+                        gossipPageNumber + 1, slot);
                 }
             }
             else if (!lastPage)
             {
-                AddGossipItemFor(player, GOSSIP_ICON_CHAT, "Next Page", EQUIPMENT_SLOT_END + 11, slot);
+                AddGossipItemFor(player, GOSSIP_ICON_CHAT,
+                    "Next Page" + GetRtgTransmogActionMarker("page", uint32(slot + 1), EQUIPMENT_SLOT_END + 11),
+                    EQUIPMENT_SLOT_END + 11, slot);
             }
 
+            if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
+                if (draft->find(slot) != draft->end())
+                    AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                        "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|tNo Change — Revert Staged Preview"
+                            + GetRtgTransmogActionMarker("revert", uint32(slot + 1)),
+                        TRANSMOG_OUTFIT_REVERT_SLOT_SENDER, slot);
+
             if (existingTransmog)
-                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|tPreview Original Appearance", EQUIPMENT_SLOT_END + 3, slot);
-            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu"), EQUIPMENT_SLOT_END, slot);
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                    "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|tPreview Original Appearance"
+                        + GetRtgTransmogActionMarker("original", uint32(slot + 1)),
+                    EQUIPMENT_SLOT_END + 3, slot);
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu")
+                    + GetRtgTransmogActionMarker("refresh", uint32(slot + 1)),
+                EQUIPMENT_SLOT_END, slot);
         }
         else
         {
@@ -1700,6 +1809,41 @@ public:
                   "The slot remains visible in RTG Transmog and will refresh when an item is equipped.|r";
             AddGossipItemFor(player, GOSSIP_ICON_CHAT, emptyText, EQUIPMENT_SLOT_END + 1, 0);
         }
+        if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
+        {
+            std::string outfitError;
+            Transmogrification::OutfitCostSummary outfitCost = sT->CalculateOutfitCost(player, &outfitError);
+            if (outfitError.empty() && outfitCost.changedSlots)
+            {
+                std::string priceText;
+                if (outfitCost.freeOutfit)
+                    priceText = "Free outfit use";
+                else
+                {
+                    std::vector<std::string> parts;
+                    if (outfitCost.copper) parts.push_back(FormatOutfitCopper(outfitCost.copper));
+                    if (outfitCost.votePoints) parts.push_back(std::to_string(outfitCost.votePoints) + " VP");
+                    if (outfitCost.tokens) parts.push_back(std::to_string(outfitCost.tokens) + " transmog token" + (outfitCost.tokens == 1 ? "" : "s"));
+                    if (parts.empty()) priceText = "No charge";
+                    else for (std::size_t i = 0; i < parts.size(); ++i)
+                    {
+                        if (i) priceText += " + ";
+                        priceText += parts[i];
+                    }
+                }
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                    "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Complete Outfit|r"
+                        + GetRtgOutfitSummaryMarker(player) + GetRtgTransmogActionMarker("apply"),
+                    TRANSMOG_OUTFIT_APPLY_SENDER, 0,
+                    "Apply every staged appearance as one complete outfit?\n\n" + priceText,
+                    0, false);
+            }
+            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview"
+                    + GetRtgOutfitSummaryMarker(player) + GetRtgTransmogActionMarker("clear"),
+                TRANSMOG_OUTFIT_CLEAR_SENDER, 0);
+        }
+
         std::string backText = "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back");
         // Player-owned portable pages are asynchronous. RTG_Core reads this raw
         // slot marker to reject stale/mismatched responses, then strips it from
@@ -1712,6 +1856,7 @@ public:
             // without forcing the player back through the root paper-doll page.
             backText += GetRtgTransmogSlotStateMarker(player, slot);
         }
+        backText += GetRtgTransmogActionMarker("back", uint32(slot + 1));
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, backText, EQUIPMENT_SLOT_END + 1, 0);
         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
     }

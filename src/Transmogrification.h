@@ -293,6 +293,7 @@ public:
     bool StageOutfitAppearance(Player* player, uint8 slot, uint32 appearanceEntry, std::string& error);
     bool StageSavedOutfit(Player* player, std::map<uint8, uint32> const& appearances, std::string& error);
     bool ClearOutfitDraft(Player* player);
+    bool ClearOutfitDraftSlot(Player* player, uint8 slot);
     outfitDraft const* GetOutfitDraft(Player const* player) const;
     OutfitCostSummary CalculateOutfitCost(Player* player, std::string* error = nullptr) const;
     bool ApplyOutfitDraft(Player* player, std::string& result);

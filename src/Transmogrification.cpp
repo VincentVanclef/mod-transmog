@@ -634,6 +634,19 @@ bool Transmogrification::ClearOutfitDraft(Player* player)
     return player && outfitDraftByGuid.erase(player->GetGUID().GetCounter()) > 0;
 }
 
+bool Transmogrification::ClearOutfitDraftSlot(Player* player, uint8 slot)
+{
+    if (!player || slot >= EQUIPMENT_SLOT_END)
+        return false;
+
+    auto ownerItr = outfitDraftByGuid.find(player->GetGUID().GetCounter());
+    if (ownerItr == outfitDraftByGuid.end() || ownerItr->second.erase(slot) == 0)
+        return false;
+    if (ownerItr->second.empty())
+        outfitDraftByGuid.erase(ownerItr);
+    return true;
+}
+
 Transmogrification::outfitDraft const* Transmogrification::GetOutfitDraft(Player const* player) const
 {
     if (!player)
