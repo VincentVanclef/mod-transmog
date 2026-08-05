@@ -27,6 +27,7 @@ Cant transmogrify rediculus items // Foereaper: would be fun to stab people with
 #include <tuple>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include "Transmogrification.h"
 #include "Chat.h"
 #include "ScriptedCreature.h"
@@ -59,6 +60,76 @@ static constexpr uint32 TRANSMOG_TROPHY_SOURCE_SENDER = 245;
 static constexpr uint32 TRANSMOG_OUTFIT_CLEAN_SENDER = 246;
 static constexpr uint32 TRANSMOG_OUTFIT_REVERT_SLOT_SENDER = 247;
 static constexpr uint32 TRANSMOG_TROPHY_PAGE_SIZE = 20;
+static constexpr uint32 RTG_TRANSMOG_PROTOCOL_VERSION = 2;
+
+struct RtgTransmogProtocolContext
+{
+    std::string page = "root";
+    std::string operation = "root";
+    uint32 slot = 0;
+    uint32 appearance = 0;
+    bool success = true;
+    uint32 token = 0;
+    uint32 reason = 0;
+};
+
+static std::unordered_map<uint32, RtgTransmogProtocolContext> RtgTransmogProtocolByOwner;
+static std::unordered_map<uint32, uint32> RtgTransmogServerGenerationByOwner;
+
+static uint32 NextRtgTransmogServerGeneration(Player* player)
+{
+    if (!player)
+        return 0;
+    uint32& generation = RtgTransmogServerGenerationByOwner[player->GetGUID().GetCounter()];
+    if (++generation == 0)
+        generation = 1;
+    return generation;
+}
+
+static void SetRtgTransmogProtocolContext(Player* player, std::string page, std::string operation,
+    uint32 slot, uint32 appearance, bool success, uint32 token, uint32 reason = 0)
+{
+    if (!player)
+        return;
+    if (!token)
+        token = NextRtgTransmogServerGeneration(player);
+    RtgTransmogProtocolByOwner[player->GetGUID().GetCounter()] = {
+        std::move(page), std::move(operation), slot, appearance, success, token, reason
+    };
+}
+
+static RtgTransmogProtocolContext const& GetRtgTransmogProtocolContext(Player* player)
+{
+    static RtgTransmogProtocolContext const fallback;
+    if (!player)
+        return fallback;
+    auto const itr = RtgTransmogProtocolByOwner.find(player->GetGUID().GetCounter());
+    return itr == RtgTransmogProtocolByOwner.end() ? fallback : itr->second;
+}
+
+static std::string GetRtgTransmogProtocolMarker(Player* player)
+{
+    RtgTransmogProtocolContext const& context = GetRtgTransmogProtocolContext(player);
+    return " |cff010101[RTGTMOG:v" + std::to_string(RTG_TRANSMOG_PROTOCOL_VERSION) + ":"
+        + context.page + ":" + context.operation + ":"
+        + std::to_string(context.slot) + ":"
+        + std::to_string(context.appearance) + ":"
+        + std::to_string(context.success ? 1u : 0u) + ":"
+        + std::to_string(context.token) + ":"
+        + std::to_string(context.reason) + "]|r";
+}
+
+static uint32 GetRtgTransmogFailureReason(std::string const& error)
+{
+    if (error.find("not been discovered") != std::string::npos) return 101;
+    if (error.find("Equip an item") != std::string::npos) return 102;
+    if (error.find("Equipment changed") != std::string::npos) return 103;
+    if (error.find("money") != std::string::npos) return 104;
+    if (error.find("Vote Points") != std::string::npos) return 105;
+    if (error.find("tokens") != std::string::npos) return 106;
+    if (error.find("invalid") != std::string::npos) return 107;
+    return 100;
+}
 
 static std::string FormatTrophyDate(uint32 timestamp)
 {
@@ -104,6 +175,10 @@ struct TransmogBrowseStats
     uint32 collectionEntries = 0;
     uint32 compatibleEntries = 0;
     uint32 uniqueAppearances = 0;
+    uint32 rejectedEntries = 0;
+    uint32 duplicateDisplays = 0;
+    TransmogCompatibilityFailure primaryFailure = TransmogCompatibilityFailure::None;
+    uint32 primaryFailureCount = 0;
 };
 
 struct TransmogBrowseEntry
@@ -122,6 +197,15 @@ static std::string GetRtgTransmogPageMarker(uint8 slot, TransmogBrowseStats cons
         + std::to_string(stats.compatibleEntries) + ":"
         + std::to_string(stats.uniqueAppearances) + ":"
         + std::to_string(page) + ":" + std::to_string(pages) + "]|r";
+}
+
+static std::string GetRtgTransmogRejectionMarker(TransmogBrowseStats const& stats)
+{
+    return " |cff010101[RTGTMOGREJECT:"
+        + std::to_string(uint32(stats.primaryFailure)) + ":"
+        + std::to_string(stats.primaryFailureCount) + ":"
+        + std::to_string(stats.rejectedEntries) + ":"
+        + std::to_string(stats.duplicateDisplays) + "]|r";
 }
 
 static std::string GetRtgTransmogSourceMarker(TransmogBrowseEntry const& entry)
@@ -501,16 +585,6 @@ int32 GetTransmogSetPrice(uint64 baseCopper)
 }
 #endif
 
-bool ValidForTransmog(Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate,
-    bool ignoreSourceLevelRequirement)
-{
-    if (!player || !targetTemplate || !sourceTemplate)
-        return false;
-
-    return sT->CanTransmogrifyItemWithItem(
-        player, targetTemplate, sourceTemplate, ignoreSourceLevelRequirement);
-}
-
 bool CmpTmog(ItemTemplate const* first, ItemTemplate const* second)
 {
     if (!first || !second)
@@ -544,6 +618,7 @@ std::vector<TransmogBrowseEntry> GetValidTransmogs(Player* player, Item* target,
     std::unordered_set<uint32> inventorySources;
     std::unordered_set<uint32> collectionSources;
     std::unordered_set<uint32> allSources;
+    std::map<TransmogCompatibilityFailure, uint32> rejectionCounts;
 
     auto addSource = [&](ItemTemplate const* sourceTemplate, bool fromInventory, bool fromCollection)
     {
@@ -551,25 +626,39 @@ std::vector<TransmogBrowseEntry> GetValidTransmogs(Player* player, Item* target,
             return;
 
         uint32 const entry = sourceTemplate->ItemId;
-        allSources.insert(entry);
+        bool const firstEvaluation = allSources.insert(entry).second;
+        auto existing = candidateByEntry.find(entry);
+        if (!firstEvaluation)
+        {
+            if (existing != candidateByEntry.end())
+            {
+                TransmogBrowseEntry& candidate = allowedItems[existing->second];
+                candidate.fromInventory = candidate.fromInventory || fromInventory;
+                candidate.fromCollection = candidate.fromCollection || fromCollection;
+                if (fromInventory)
+                    inventorySources.insert(entry);
+                if (fromCollection)
+                    collectionSources.insert(entry);
+            }
+            return;
+        }
 
         bool const ignoreSourceLevelRequirement = fromInventory;
-        if (!ValidForTransmog(player, targetTemplate, sourceTemplate, ignoreSourceLevelRequirement))
+        Transmogrification::CompatibilityResult const compatibility = sT->EvaluateCompatibility(
+            player, targetTemplate, sourceTemplate, ignoreSourceLevelRequirement);
+        if (!compatibility.allowed)
+        {
+            ++rejectionCounts[compatibility.failure];
+            LOG_DEBUG("module", "RTG Transmog candidate rejected (player: {}, target: {}, source: {}, reason: {}).",
+                player->GetGUID().GetCounter(), targetTemplate->ItemId, entry,
+                Transmogrification::GetCompatibilityFailureName(compatibility.failure));
             return;
+        }
 
         if (fromInventory)
             inventorySources.insert(entry);
         if (fromCollection)
             collectionSources.insert(entry);
-
-        auto existing = candidateByEntry.find(entry);
-        if (existing != candidateByEntry.end())
-        {
-            TransmogBrowseEntry& candidate = allowedItems[existing->second];
-            candidate.fromInventory = candidate.fromInventory || fromInventory;
-            candidate.fromCollection = candidate.fromCollection || fromCollection;
-            return;
-        }
 
         candidateByEntry.emplace(entry, allowedItems.size());
         allowedItems.push_back({ sourceTemplate, fromInventory, fromCollection });
@@ -629,11 +718,27 @@ std::vector<TransmogBrowseEntry> GetValidTransmogs(Player* player, Item* target,
     {
         if (!entry.item)
             return true;
-        return !addedDisplays.insert(entry.item->DisplayInfoID).second;
+        if (addedDisplays.insert(entry.item->DisplayInfoID).second)
+            return false;
+        ++rejectionCounts[TransmogCompatibilityFailure::DuplicateDisplay];
+        return true;
     }), allowedItems.end());
 
     if (stats)
+    {
         stats->uniqueAppearances = uint32(allowedItems.size());
+        stats->duplicateDisplays = rejectionCounts[TransmogCompatibilityFailure::DuplicateDisplay];
+        for (auto const& [failure, count] : rejectionCounts)
+        {
+            stats->rejectedEntries += count;
+            if (failure != TransmogCompatibilityFailure::DuplicateDisplay
+                && count > stats->primaryFailureCount)
+            {
+                stats->primaryFailure = failure;
+                stats->primaryFailureCount = count;
+            }
+        }
+    }
 
     return allowedItems;
 }
@@ -1013,9 +1118,16 @@ public:
 
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
 
+        if (!RtgTransmogProtocolByOwner.contains(player->GetGUID().GetCounter()))
+            SetRtgTransmogProtocolContext(player, "root", "root", 0, 0, true, 0);
+
         // Scoreboard-opened transmog has no creature context, so give players a direct return path.
         if (!creature)
-            AddGossipItemFor(player, GOSSIP_ICON_TALK, "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t |cff3b2a1a" + GetLocaleText(locale, "back_to_scoreboard") + "|r", TRANSMOG_SCOREBOARD_RETURN_SENDER, 0);
+            AddGossipItemFor(player, GOSSIP_ICON_TALK,
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t |cff3b2a1a"
+                    + GetLocaleText(locale, "back_to_scoreboard") + "|r"
+                    + GetRtgTransmogProtocolMarker(player),
+                TRANSMOG_SCOREBOARD_RETURN_SENDER, 0);
 
         if (sT->GetFreeTransmogEnabled())
         {
@@ -1165,6 +1277,8 @@ public:
         {
             std::string result;
             bool success = sT->ApplyOutfitDraft(player, result);
+            SetRtgTransmogProtocolContext(player, "root", "apply", 0, 0, success, 0,
+                success ? 0u : GetRtgTransmogFailureReason(result));
             if (success) session->SendAreaTriggerMessage("{}", result);
             else ChatHandler(session).SendSysMessage(result);
             OnGossipHello(player, creature);
@@ -1172,7 +1286,9 @@ public:
         }
         if (sender == TRANSMOG_OUTFIT_CLEAR_SENDER)
         {
-            sT->ClearOutfitDraft(player);
+            bool const success = sT->ClearOutfitDraft(player);
+            SetRtgTransmogProtocolContext(player, "root", "clear", 0, 0, success, 0,
+                success ? 0u : 108u);
             session->SendAreaTriggerMessage("Outfit preview cleared. Nothing was charged.");
             OnGossipHello(player, creature);
             return true;
@@ -1185,7 +1301,10 @@ public:
                 return true;
             }
             uint8 const slot = uint8(action);
-            if (sT->ClearOutfitDraftSlot(player, slot))
+            bool const success = sT->ClearOutfitDraftSlot(player, slot);
+            SetRtgTransmogProtocolContext(player, "slot", "revert", uint32(slot + 1), 0,
+                success, 0, success ? 0u : 108u);
+            if (success)
                 session->SendAreaTriggerMessage("Staged slot change reverted. Nothing was charged.");
             ShowTransmogItemsInGossipMenu(player, creature, slot, EQUIPMENT_SLOT_END);
             return true;
@@ -1291,6 +1410,8 @@ public:
         // Next page
         if (sender > EQUIPMENT_SLOT_END + 10)
         {
+            uint32 const page = sender - EQUIPMENT_SLOT_END - 10 + 1;
+            SetRtgTransmogProtocolContext(player, "slot", "page", action + 1, page, true, 0);
             ShowTransmogItemsInGossipMenu(player, creature, action, sender);
             return true;
         }
@@ -1299,6 +1420,11 @@ public:
             case EQUIPMENT_SLOT_END: // Show items you can use
             {
                 sT->selectionCache[player->GetGUID()] = action;
+                RtgTransmogProtocolContext const& existingContext = GetRtgTransmogProtocolContext(player);
+                if (existingContext.operation != "open_slot" || existingContext.slot != action + 1)
+                    SetRtgTransmogProtocolContext(player, "slot", "open_slot", action + 1, 0,
+                        player->GetItemByPos(INVENTORY_SLOT_BAG_0, action) != nullptr, 0,
+                        player->GetItemByPos(INVENTORY_SLOT_BAG_0, action) ? 0u : 102u);
 
                 bool useVendorInterface = player->GetPlayerSetting("mod-transmog", SETTING_VENDOR_INTERFACE).IsEnabled();
                 bool allowVendorInterface = creature && (sT->GetUseVendorInterface() || useVendorInterface);
@@ -1311,6 +1437,7 @@ public:
                 break;
             }
             case EQUIPMENT_SLOT_END + 1: // Main menu
+                SetRtgTransmogProtocolContext(player, "root", "root", 0, 0, true, 0);
                 OnGossipHello(player, creature);
                 break;
             case EQUIPMENT_SLOT_END + 2: // Remove Transmogrifications
@@ -1339,7 +1466,10 @@ public:
             case EQUIPMENT_SLOT_END + 3: // Preview original appearance for one slot
             {
                 std::string error;
-                if (!sT->StageOutfitAppearance(player, uint8(action), 0, error))
+                bool const success = sT->StageOutfitAppearance(player, uint8(action), 0, error);
+                SetRtgTransmogProtocolContext(player, "slot", "original", action + 1, 0,
+                    success, 0, success ? 0u : GetRtgTransmogFailureReason(error));
+                if (!success)
                     ChatHandler(session).SendSysMessage(error);
                 else
                     session->SendAreaTriggerMessage("Original appearance staged. Nothing has been charged.");
@@ -1531,7 +1661,10 @@ public:
                     return true;
                 }
                 std::string error;
-                if (!sT->StageOutfitAppearance(player, uint8(sender), action, error))
+                bool const success = sT->StageOutfitAppearance(player, uint8(sender), action, error);
+                SetRtgTransmogProtocolContext(player, "slot", "stage", sender + 1, action,
+                    success, 0, success ? 0u : GetRtgTransmogFailureReason(error));
+                if (!success)
                     ChatHandler(session).SendSysMessage(error);
                 else
                     session->SendAreaTriggerMessage("Appearance staged. Nothing has been charged.");
@@ -1748,6 +1881,8 @@ public:
             backText += " |cff010101[RTGTSLOT:" + std::to_string(uint32(slot + 1)) + "]|r";
             backText += GetRtgTransmogSlotStateMarker(player, slot);
             backText += GetRtgTransmogPageMarker(slot, browseStats, uint32(pageNumber + 1), totalPages);
+            backText += GetRtgTransmogRejectionMarker(browseStats);
+            backText += GetRtgTransmogProtocolMarker(player);
         }
         backText += GetRtgTransmogActionMarker("back", uint32(slot + 1));
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, backText, EQUIPMENT_SLOT_END + 1, 0);
@@ -2034,6 +2169,8 @@ public:
     void OnPlayerLogout(Player* player) override
     {
         sT->ClearOutfitDraft(player);
+        RtgTransmogProtocolByOwner.erase(player->GetGUID().GetCounter());
+        RtgTransmogServerGenerationByOwner.erase(player->GetGUID().GetCounter());
         ObjectGuid pGUID = player->GetGUID();
         for (Transmogrification::transmog2Data::const_iterator it = sT->entryMap[pGUID].begin(); it != sT->entryMap[pGUID].end(); ++it)
             sT->dataMap.erase(it->first);
@@ -2249,11 +2386,13 @@ namespace RTG::Services::Transmog
         player->PlayerTalkClass->ClearMenus();
         CloseGossipMenuFor(player);
 
+        SetRtgTransmogProtocolContext(player, "root", "root", 0, 0, true, 0);
+
         sPlayerGossipMgr->ShowGossipMenu(player, 91013, PlayerGossip_TransmogService::ROOT, 0);
         return true;
     }
 
-    bool OpenSlot(Player* player, uint8 inventorySlot)
+    bool OpenSlot(Player* player, uint8 inventorySlot, uint32 requestToken)
     {
         if (!player || !player->GetSession() || !IsAvailable())
             return false;
@@ -2266,6 +2405,10 @@ namespace RTG::Services::Transmog
         if (!session || !sT->GetSlotName(equipmentSlot, session))
             return Open(player);
 
+        bool const hasTarget = player->GetItemByPos(INVENTORY_SLOT_BAG_0, equipmentSlot) != nullptr;
+        SetRtgTransmogProtocolContext(player, "slot", "open_slot", inventorySlot, 0,
+            hasTarget, requestToken, hasTarget ? 0u : 102u);
+
         player->PlayerTalkClass->ClearMenus();
         CloseGossipMenuFor(player);
 
@@ -2275,6 +2418,118 @@ namespace RTG::Services::Transmog
         sPlayerGossipMgr->ShowGossipMenu(
             player, 91013, PlayerGossip_TransmogService::DIRECT_SLOT, inventorySlot);
         return true;
+    }
+
+    bool OpenSlot(Player* player, uint8 inventorySlot)
+    {
+        return OpenSlot(player, inventorySlot, 0);
+    }
+
+    static bool ShowProtocolSlotPage(Player* player, uint8 inventorySlot, uint32 page = 1)
+    {
+        if (!player || !player->GetSession() || inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
+            return false;
+        uint8 const equipmentSlot = inventorySlot - 1;
+        if (!sT->GetSlotName(equipmentSlot, player->GetSession()))
+            return false;
+
+        player->PlayerTalkClass->ClearMenus();
+        CloseGossipMenuFor(player);
+        uint16 const gossipPage = page <= 1
+            ? EQUIPMENT_SLOT_END
+            : uint16(EQUIPMENT_SLOT_END + 10 + page - 1);
+        npc_transmogrifier script;
+        script.ShowTransmogItemsInGossipMenu(player, nullptr, equipmentSlot, gossipPage);
+        return true;
+    }
+
+    bool Stage(Player* player, uint8 inventorySlot, uint32 appearanceEntry, uint32 requestToken)
+    {
+        if (!player || inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
+            return false;
+        uint8 const equipmentSlot = inventorySlot - 1;
+        std::string error;
+        bool const success = sT->StageOutfitAppearance(player, equipmentSlot, appearanceEntry, error);
+        uint32 reason = success ? 0u : GetRtgTransmogFailureReason(error);
+        if (!success && appearanceEntry)
+        {
+            Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, equipmentSlot);
+            ItemTemplate const* source = sObjectMgr->GetItemTemplate(appearanceEntry);
+            if (target && source && sT->CharacterCanUseAppearance(player, appearanceEntry))
+                reason = uint32(sT->EvaluateCompatibility(player, target->GetTemplate(), source,
+                    player->HasItemCount(appearanceEntry, 1, false)).failure);
+        }
+        SetRtgTransmogProtocolContext(player, "slot", "stage", inventorySlot, appearanceEntry,
+            success, requestToken, reason);
+        if (success)
+            player->GetSession()->SendAreaTriggerMessage("Appearance staged. Nothing has been charged.");
+        else
+            ChatHandler(player->GetSession()).SendSysMessage(error);
+        return ShowProtocolSlotPage(player, inventorySlot);
+    }
+
+    bool Original(Player* player, uint8 inventorySlot, uint32 requestToken)
+    {
+        if (!player || inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
+            return false;
+        std::string error;
+        bool const success = sT->StageOutfitAppearance(player, inventorySlot - 1, 0, error);
+        SetRtgTransmogProtocolContext(player, "slot", "original", inventorySlot, 0,
+            success, requestToken, success ? 0u : GetRtgTransmogFailureReason(error));
+        if (success)
+            player->GetSession()->SendAreaTriggerMessage("Original appearance staged. Nothing has been charged.");
+        else
+            ChatHandler(player->GetSession()).SendSysMessage(error);
+        return ShowProtocolSlotPage(player, inventorySlot);
+    }
+
+    bool Revert(Player* player, uint8 inventorySlot, uint32 requestToken)
+    {
+        if (!player || inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
+            return false;
+        bool const success = sT->ClearOutfitDraftSlot(player, inventorySlot - 1);
+        SetRtgTransmogProtocolContext(player, "slot", "revert", inventorySlot, 0,
+            success, requestToken, success ? 0u : 108u);
+        if (success)
+            player->GetSession()->SendAreaTriggerMessage("Staged slot change reverted. Nothing was charged.");
+        return ShowProtocolSlotPage(player, inventorySlot);
+    }
+
+    bool Page(Player* player, uint8 inventorySlot, uint32 page, uint32 requestToken)
+    {
+        if (!player || inventorySlot < 1 || inventorySlot > EQUIPMENT_SLOT_END)
+            return false;
+        SetRtgTransmogProtocolContext(player, "slot", "page", inventorySlot, page, true, requestToken);
+        return ShowProtocolSlotPage(player, inventorySlot, std::max<uint32>(1, page));
+    }
+
+    bool Clear(Player* player, uint32 requestToken)
+    {
+        if (!player || !player->GetSession())
+            return false;
+        bool const success = sT->ClearOutfitDraft(player);
+        SetRtgTransmogProtocolContext(player, "root", "clear", 0, 0, success,
+            requestToken, success ? 0u : 108u);
+        if (success)
+            player->GetSession()->SendAreaTriggerMessage("Outfit preview cleared. Nothing was charged.");
+        npc_transmogrifier script;
+        return script.OnGossipHello(player, nullptr);
+    }
+
+    bool Apply(Player* player, uint32 requestToken)
+    {
+        if (!player || !player->GetSession())
+            return false;
+        std::string result;
+        bool const success = sT->ApplyOutfitDraft(player, result);
+        SetRtgTransmogProtocolContext(player, "root", "apply", 0, 0, success,
+            requestToken, success ? 0u : GetRtgTransmogFailureReason(result));
+        if (success)
+            player->GetSession()->SendAreaTriggerMessage("{}", result);
+        else
+            ChatHandler(player->GetSession()).SendSysMessage(result);
+        npc_transmogrifier script;
+        return script.OnGossipHello(player, nullptr);
     }
 }
 

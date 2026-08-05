@@ -799,40 +799,256 @@ bool Transmogrification::ApplyOutfitDraft(Player* player, std::string& result)
 
     uint32 const ownerGuid = player->GetGUID().GetCounter();
     outfitDraft const draft = outfitDraftByGuid[ownerGuid];
-    CharacterDatabaseTransaction transaction = CharacterDatabase.BeginTransaction();
+
+    struct AppearanceSnapshot
+    {
+        uint8 slot = 0;
+        Item* target = nullptr;
+        uint32 targetGuid = 0;
+        uint32 previousEntry = 0;
+        uint32 desiredEntry = 0;
+    };
+    std::vector<AppearanceSnapshot> snapshots;
+    snapshots.reserve(draft.size());
     for (auto const& [slot, staged] : draft)
     {
         Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
         if (!target || GetFakeEntry(target->GetGUID()) == staged.appearanceEntry)
             continue;
-        if (staged.appearanceEntry == 0)
-            DeleteFakeEntry(player, slot, target, &transaction);
-        else
-            SetFakeEntry(player, staged.appearanceEntry, slot, target, &transaction);
-
-        target->UpdatePlayedTime(player);
-        target->SetNotRefundable(player);
-        target->ClearSoulboundTradeable(player);
+        snapshots.push_back({ slot, target, target->GetGUID().GetCounter(),
+            GetFakeEntry(target->GetGUID()), staged.appearanceEntry });
     }
-    // Commit every appearance row together before consuming the already validated
-    // combined payment. AzerothCore stores gold, items, Vote Points, and appearance
-    // rows through different runtime/storage paths, so a single cross-store SQL
-    // transaction is not possible; synchronous commit plus full prevalidation is the
-    // safest player-first ordering and prevents partial slot application.
-    CharacterDatabase.DirectCommitTransaction(transaction);
-
-    if (cost.votePoints && !SpendVotePoints(player, cost.votePoints))
+    if (snapshots.size() != cost.changedSlots)
     {
-        // This should be unreachable after same-thread validation. Keep the failure
-        // explicit in logs rather than pretending the charge succeeded.
-        LOG_ERROR("module", "RTG Transmog: validated Vote Point charge failed after outfit commit for character {}.", ownerGuid);
+        result = "The equipped items changed while the outfit was being confirmed. No appearance was applied.";
+        return false;
+    }
+
+    bool previousFreeCooldownExists = false;
+    uint32 previousFreeCooldown = 0;
+    uint32 freeUseTimestamp = 0;
+    if (cost.freeOutfit)
+    {
+        if (QueryResult stored = CharacterDatabase.Query(
+            "SELECT `last_free_transmog_ts` FROM `custom_transmogrification_free_cooldown` WHERE `Owner`={} LIMIT 1",
+            ownerGuid))
+        {
+            previousFreeCooldownExists = true;
+            previousFreeCooldown = stored->Fetch()[0].Get<uint32>();
+        }
+        freeUseTimestamp = uint32(std::time(nullptr));
+    }
+
+    // Test-realm-only fault injection. This key is intentionally absent from
+    // transmog.conf.dist and defaults to disabled: 1=VP, 2=tokens, 3=money,
+    // 4=appearance/cooldown commit verification. It lets the real compensation
+    // path be exercised without shipping a player- or GM-facing command.
+    uint8 const testFailureStage = sConfigMgr->GetOption<uint8>(
+        "Transmogrification.Test.OutfitFailureStage", 0);
+
+    bool votePointsPaid = false;
+    uint32 tokensPaid = 0;
+    uint64 copperPaid = 0;
+    auto refundPayment = [&]()
+    {
+        bool refunded = true;
+        if (copperPaid)
+        {
+            player->ModifyMoney(int64(copperPaid), false);
+            copperPaid = 0;
+        }
+        if (tokensPaid)
+        {
+            if (!player->AddItem(TokenEntry, tokensPaid))
+                refunded = false;
+            tokensPaid = 0;
+        }
+        if (votePointsPaid)
+        {
+            refunded = RefundVotePoints(player, cost.votePoints) && refunded;
+            votePointsPaid = false;
+        }
+        return refunded;
+    };
+
+    // Charge each independently stored currency before touching appearance rows,
+    // verify the exact post-state, and compensate every earlier charge if a later
+    // mutation fails. The draft remains intact on every failure path.
+    if (cost.votePoints)
+    {
+        if (testFailureStage == 1)
+        {
+            result = "Injected Vote Point payment failure. No appearance was applied.";
+            LOG_WARN("module", "RTG Transmog: injected outfit VP failure for character {}.", ownerGuid);
+            return false;
+        }
+        if (!SpendVotePoints(player, cost.votePoints))
+        {
+            result = "The Vote Point payment could not be completed. No appearance was applied.";
+            return false;
+        }
+        votePointsPaid = true;
     }
     if (cost.tokens)
+    {
+        if (testFailureStage == 2)
+        {
+            bool const refunded = refundPayment();
+            result = refunded
+                ? "Injected token payment failure. No appearance was applied."
+                : "Injected token failure could not fully restore the earlier payment. Contact an administrator.";
+            LOG_WARN("module", "RTG Transmog: injected outfit token failure for character {} (refund: {}).",
+                ownerGuid, refunded ? "complete" : "incomplete");
+            return false;
+        }
+        uint32 const before = player->GetItemCount(TokenEntry, false);
         player->DestroyItemCount(TokenEntry, cost.tokens, true);
+        uint32 const after = player->GetItemCount(TokenEntry, false);
+        tokensPaid = before > after ? before - after : 0;
+        if (tokensPaid != cost.tokens)
+        {
+            bool const refunded = refundPayment();
+            result = refunded
+                ? "The token payment could not be completed. No appearance was applied."
+                : "The token payment failed and could not be fully restored. Contact an administrator.";
+            return false;
+        }
+    }
     if (cost.copper)
+    {
+        if (testFailureStage == 3)
+        {
+            bool const refunded = refundPayment();
+            result = refunded
+                ? "Injected money payment failure. No appearance was applied."
+                : "Injected money failure could not fully restore the earlier payment. Contact an administrator.";
+            LOG_WARN("module", "RTG Transmog: injected outfit money failure for character {} (refund: {}).",
+                ownerGuid, refunded ? "complete" : "incomplete");
+            return false;
+        }
+        uint64 const before = player->GetMoney();
         player->ModifyMoney(-int64(cost.copper), false);
+        uint64 const after = player->GetMoney();
+        copperPaid = before > after ? before - after : 0;
+        if (copperPaid != cost.copper)
+        {
+            bool const refunded = refundPayment();
+            result = refunded
+                ? "The money payment could not be completed. No appearance was applied."
+                : "The money payment failed and could not be fully restored. Contact an administrator.";
+            return false;
+        }
+    }
+
+    auto writeAppearances = [&](bool desired)
+    {
+        CharacterDatabaseTransaction transaction = CharacterDatabase.BeginTransaction();
+        for (AppearanceSnapshot const& snapshot : snapshots)
+        {
+            uint32 const entry = desired ? snapshot.desiredEntry : snapshot.previousEntry;
+            if (entry == 0)
+                DeleteFakeEntry(player, snapshot.slot, snapshot.target, &transaction);
+            else
+                SetFakeEntry(player, entry, snapshot.slot, snapshot.target, &transaction);
+        }
+        if (cost.freeOutfit)
+        {
+            if (desired)
+                transaction->Append(
+                    "REPLACE INTO `custom_transmogrification_free_cooldown` (`Owner`, `last_free_transmog_ts`) VALUES ({}, {})",
+                    ownerGuid, freeUseTimestamp);
+            else if (previousFreeCooldownExists)
+                transaction->Append(
+                    "REPLACE INTO `custom_transmogrification_free_cooldown` (`Owner`, `last_free_transmog_ts`) VALUES ({}, {})",
+                    ownerGuid, previousFreeCooldown);
+            else
+                transaction->Append(
+                    "DELETE FROM `custom_transmogrification_free_cooldown` WHERE `Owner`={}", ownerGuid);
+        }
+        CharacterDatabase.DirectCommitTransaction(transaction);
+    };
+    auto appearancesMatch = [&](bool desired)
+    {
+        for (AppearanceSnapshot const& snapshot : snapshots)
+        {
+            uint32 const expected = desired ? snapshot.desiredEntry : snapshot.previousEntry;
+            QueryResult stored = CharacterDatabase.Query(
+                "SELECT `FakeEntry` FROM `custom_transmogrification` WHERE `GUID`={} LIMIT 1",
+                snapshot.targetGuid);
+            if (expected == 0)
+            {
+                if (stored)
+                    return false;
+            }
+            else if (!stored || stored->Fetch()[0].Get<uint32>() != expected)
+                return false;
+        }
+        if (cost.freeOutfit)
+        {
+            QueryResult stored = CharacterDatabase.Query(
+                "SELECT `last_free_transmog_ts` FROM `custom_transmogrification_free_cooldown` WHERE `Owner`={} LIMIT 1",
+                ownerGuid);
+            if (desired)
+            {
+                if (!stored || stored->Fetch()[0].Get<uint32>() != freeUseTimestamp)
+                    return false;
+            }
+            else if (previousFreeCooldownExists)
+            {
+                if (!stored || stored->Fetch()[0].Get<uint32>() != previousFreeCooldown)
+                    return false;
+            }
+            else if (stored)
+                return false;
+        }
+        if (desired && testFailureStage == 4)
+            return false;
+        return true;
+    };
+
+    writeAppearances(true);
+    if (!appearancesMatch(true))
+    {
+        // One idempotent retry distinguishes a transient commit/read failure from
+        // a persistent database problem. If it still fails, restore the captured
+        // prior appearance state before refunding the exact payment.
+        writeAppearances(true);
+        if (!appearancesMatch(true))
+        {
+            writeAppearances(false);
+            if (appearancesMatch(false))
+            {
+                bool const refunded = refundPayment();
+                result = refunded
+                    ? "The appearance database did not accept the outfit. No appearance change or charge was kept."
+                    : "The outfit was restored, but its payment could not be fully refunded. Contact an administrator.";
+                LOG_ERROR("module", "RTG Transmog: outfit commit failed and was compensated for character {} (refund: {}).",
+                    ownerGuid, refunded ? "complete" : "incomplete");
+                return false;
+            }
+
+            // Never refund an unverified rollback: that could create the exact
+            // unpaid appearance failure this routine is designed to prevent.
+            result = "The Transmog database could not verify the outfit or its rollback. Payment was retained for safety; contact an administrator.";
+            LOG_ERROR("module", "RTG Transmog: CRITICAL unverified outfit and rollback for character {}; payment retained.", ownerGuid);
+            return false;
+        }
+    }
+
+    for (AppearanceSnapshot const& snapshot : snapshots)
+    {
+        snapshot.target->UpdatePlayedTime(player);
+        snapshot.target->SetNotRefundable(player);
+        snapshot.target->ClearSoulboundTradeable(player);
+    }
     if (cost.freeOutfit)
-        MarkFreeTransmogUsed(player);
+    {
+        uint64 const expires64 = uint64(freeUseTimestamp) + 120ULL;
+        PendingFreeTransmogUseByGuid[ownerGuid] = {
+            freeUseTimestamp,
+            uint32(std::min<uint64>(expires64, std::numeric_limits<uint32>::max()))
+        };
+    }
     outfitDraftByGuid.erase(ownerGuid);
 
     result = "Applied " + std::to_string(cost.changedSlots) + " outfit change";
@@ -1050,62 +1266,168 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
     return LANG_ERR_TRANSMOG_OK;
 }
 
-bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target, ItemTemplate const* source, bool ignoreSourceLevelRequirement) const
+char const* Transmogrification::GetCompatibilityFailureName(TransmogCompatibilityFailure failure)
 {
+    switch (failure)
+    {
+        case TransmogCompatibilityFailure::None: return "none";
+        case TransmogCompatibilityFailure::MissingTemplate: return "missing_template";
+        case TransmogCompatibilityFailure::SameItem: return "same_item";
+        case TransmogCompatibilityFailure::DuplicateDisplay: return "duplicate_display";
+        case TransmogCompatibilityFailure::ItemClass: return "item_class";
+        case TransmogCompatibilityFailure::Quality: return "quality";
+        case TransmogCompatibilityFailure::ClassOrRace: return "class_or_race";
+        case TransmogCompatibilityFailure::RequiredSkillOrSpell: return "required_skill_or_spell";
+        case TransmogCompatibilityFailure::ArmorSubclass: return "armor_subclass";
+        case TransmogCompatibilityFailure::WeaponFamily: return "weapon_family";
+        case TransmogCompatibilityFailure::Handedness: return "handedness";
+        case TransmogCompatibilityFailure::TargetSlot: return "target_slot";
+        case TransmogCompatibilityFailure::RangedFamily: return "ranged_family";
+        case TransmogCompatibilityFailure::ExplicitlyBlocked: return "explicitly_blocked";
+        case TransmogCompatibilityFailure::Level: return "level";
+        case TransmogCompatibilityFailure::EventOrStats: return "event_or_stats";
+    }
+    return "unknown";
+}
 
-    if (!target || !source)
-        return false;
+char const* Transmogrification::GetCompatibilityFailurePlayerText(TransmogCompatibilityFailure failure)
+{
+    switch (failure)
+    {
+        case TransmogCompatibilityFailure::None: return "compatible";
+        case TransmogCompatibilityFailure::Quality: return "quality rules";
+        case TransmogCompatibilityFailure::ClassOrRace: return "class or faction rules";
+        case TransmogCompatibilityFailure::RequiredSkillOrSpell: return "skill or spell requirements";
+        case TransmogCompatibilityFailure::ArmorSubclass: return "armor-family rules";
+        case TransmogCompatibilityFailure::WeaponFamily: return "weapon-family rules";
+        case TransmogCompatibilityFailure::Handedness: return "weapon handedness rules";
+        case TransmogCompatibilityFailure::TargetSlot: return "target-slot rules";
+        case TransmogCompatibilityFailure::RangedFamily: return "ranged-weapon rules";
+        case TransmogCompatibilityFailure::Level: return "level requirements";
+        case TransmogCompatibilityFailure::DuplicateDisplay: return "a duplicate visual";
+        case TransmogCompatibilityFailure::SameItem: return "the equipped item itself";
+        case TransmogCompatibilityFailure::ExplicitlyBlocked: return "an explicit Transmog restriction";
+        case TransmogCompatibilityFailure::ItemClass: return "armor/weapon type rules";
+        case TransmogCompatibilityFailure::EventOrStats: return "item eligibility rules";
+        case TransmogCompatibilityFailure::MissingTemplate: return "missing item data";
+    }
+    return "compatibility rules";
+}
 
+Transmogrification::CompatibilityResult Transmogrification::EvaluateCompatibility(
+    Player* player, ItemTemplate const* target, ItemTemplate const* source,
+    bool ignoreSourceLevelRequirement) const
+{
+    auto reject = [](TransmogCompatibilityFailure failure) -> CompatibilityResult
+    {
+        return { false, failure };
+    };
+
+    if (!player || !target || !source)
+        return reject(TransmogCompatibilityFailure::MissingTemplate);
     if (source->ItemId == target->ItemId)
-        return false;
-
+        return reject(TransmogCompatibilityFailure::SameItem);
     if (source->DisplayInfoID == target->DisplayInfoID)
-        return false;
-
+        return reject(TransmogCompatibilityFailure::DuplicateDisplay);
     if (source->Class != target->Class)
-        return false;
+        return reject(TransmogCompatibilityFailure::ItemClass);
 
-    if (source->InventoryType == INVTYPE_BAG ||
-        source->InventoryType == INVTYPE_RELIC ||
-        // source->InventoryType == INVTYPE_BODY ||
-        source->InventoryType == INVTYPE_FINGER ||
-        source->InventoryType == INVTYPE_TRINKET ||
-        source->InventoryType == INVTYPE_AMMO ||
-        source->InventoryType == INVTYPE_QUIVER)
-        return false;
+    auto unsupportedInventoryType = [](uint32 inventoryType)
+    {
+        return inventoryType == INVTYPE_BAG || inventoryType == INVTYPE_RELIC
+            || inventoryType == INVTYPE_FINGER || inventoryType == INVTYPE_TRINKET
+            || inventoryType == INVTYPE_AMMO || inventoryType == INVTYPE_QUIVER;
+    };
+    if (unsupportedInventoryType(source->InventoryType) || unsupportedInventoryType(target->InventoryType))
+        return reject(TransmogCompatibilityFailure::TargetSlot);
 
-    if (target->InventoryType == INVTYPE_BAG ||
-        target->InventoryType == INVTYPE_RELIC ||
-        // target->InventoryType == INVTYPE_BODY ||
-        target->InventoryType == INVTYPE_FINGER ||
-        target->InventoryType == INVTYPE_TRINKET ||
-        target->InventoryType == INVTYPE_AMMO ||
-        target->InventoryType == INVTYPE_QUIVER)
-        return false;
+    auto suitabilityFailure = [this, player](ItemTemplate const* proto, bool ignoreLevel)
+    {
+        if (!proto || (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON))
+            return TransmogCompatibilityFailure::ItemClass;
+        if (IsAllowed(proto->ItemId))
+            return TransmogCompatibilityFailure::None;
+        if (IsNotAllowed(proto->ItemId)
+            || (!AllowFishingPoles && proto->Class == ITEM_CLASS_WEAPON
+                && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE))
+            return TransmogCompatibilityFailure::ExplicitlyBlocked;
+        if (!IsAllowedQuality(proto->Quality, player->GetGUID()))
+            return TransmogCompatibilityFailure::Quality;
+        bool invalidStats = false;
+        if (!IgnoreReqStats && !proto->RandomProperty && !proto->RandomSuffix && proto->StatsCount > 0)
+        {
+            invalidStats = true;
+            for (uint8 index = 0; index < proto->StatsCount; ++index)
+                if (proto->ItemStat[index].ItemStatValue != 0)
+                {
+                    invalidStats = false;
+                    break;
+                }
+        }
+        if ((!IgnoreReqEvent && proto->HolidayId && !IsHolidayActive((HolidayIds)proto->HolidayId))
+            || invalidStats)
+            return TransmogCompatibilityFailure::EventOrStats;
 
-    if (!SuitableForTransmogrification(player, target, false)
-        || !SuitableForTransmogrification(player, source, ignoreSourceLevelRequirement))
-        return false;
+        bool const isCloak = proto->InventoryType == INVTYPE_CLOAK;
+        uint32 const subclassSkill = proto->GetSkill();
+        if (!isCloak && proto->SubClass > 0 && subclassSkill
+            && player->GetSkillValue(subclassSkill) == 0)
+        {
+            if (proto->Class == ITEM_CLASS_ARMOR && !AllowMixedArmorTypes)
+                return TransmogCompatibilityFailure::ArmorSubclass;
+            if (proto->Class == ITEM_CLASS_WEAPON && AllowMixedWeaponTypes != MIXED_WEAPONS_LOOSE)
+                return TransmogCompatibilityFailure::WeaponFamily;
+        }
+
+        if ((proto->HasFlag2(ITEM_FLAG2_FACTION_HORDE) && player->GetTeamId() != TEAM_HORDE)
+            || (proto->HasFlag2(ITEM_FLAG2_FACTION_ALLIANCE) && player->GetTeamId() != TEAM_ALLIANCE)
+            || (!IgnoreReqClass && (proto->AllowableClass & player->getClassMask()) == 0)
+            || (!IgnoreReqRace && (proto->AllowableRace & player->getRaceMask()) == 0))
+            return TransmogCompatibilityFailure::ClassOrRace;
+
+        if (!IgnoreReqSkill && proto->RequiredSkill != 0
+            && (player->GetSkillValue(proto->RequiredSkill) == 0
+                || player->GetSkillValue(proto->RequiredSkill) < proto->RequiredSkillRank))
+            return TransmogCompatibilityFailure::RequiredSkillOrSpell;
+        if (!ignoreLevel && !IgnoreLevelRequirement(player->GetGUID())
+            && player->GetLevel() < proto->RequiredLevel)
+            return TransmogCompatibilityFailure::Level;
+        if (AllowLowerTiers && TierAvailable(player, 0, proto->SubClass))
+            return TransmogCompatibilityFailure::None;
+        if (!IgnoreReqSpell && proto->RequiredSpell != 0 && !player->HasSpell(proto->RequiredSpell))
+            return TransmogCompatibilityFailure::RequiredSkillOrSpell;
+        return TransmogCompatibilityFailure::None;
+    };
+
+    if (TransmogCompatibilityFailure failure = suitabilityFailure(target, false);
+        failure != TransmogCompatibilityFailure::None)
+        return reject(failure);
+    if (TransmogCompatibilityFailure failure = suitabilityFailure(source, ignoreSourceLevelRequirement);
+        failure != TransmogCompatibilityFailure::None)
+        return reject(failure);
 
     if (IsRangedWeapon(source->Class, source->SubClass) != IsRangedWeapon(target->Class, target->SubClass))
-        return false;
+        return reject(TransmogCompatibilityFailure::RangedFamily);
 
-    // Cloaks are one visual family even when custom or legacy item rows use
-    // different armor subclasses (commonly Cloth versus Miscellaneous). Their
-    // shared INVTYPE_CLOAK is the compatibility boundary; requiring subclass
-    // equality incorrectly hides otherwise valid cloak appearances.
     bool const isCloakPair = source->InventoryType == INVTYPE_CLOAK
         && target->InventoryType == INVTYPE_CLOAK;
-
-    if (source->SubClass != target->SubClass
-        && !isCloakPair
+    if (source->SubClass != target->SubClass && !isCloakPair
         && !IsSubclassMismatchAllowed(player, source, target))
-        return false;
-
+        return reject(target->Class == ITEM_CLASS_WEAPON
+            ? TransmogCompatibilityFailure::WeaponFamily
+            : TransmogCompatibilityFailure::ArmorSubclass);
     if (source->InventoryType != target->InventoryType && !IsInvTypeMismatchAllowed(source, target))
-        return false;
+        return reject(target->Class == ITEM_CLASS_WEAPON
+            ? TransmogCompatibilityFailure::Handedness
+            : TransmogCompatibilityFailure::TargetSlot);
 
-    return true;
+    return { true, TransmogCompatibilityFailure::None };
+}
+
+bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target,
+    ItemTemplate const* source, bool ignoreSourceLevelRequirement) const
+{
+    return EvaluateCompatibility(player, target, source, ignoreSourceLevelRequirement).allowed;
 }
 
 bool Transmogrification::IsSubclassMismatchAllowed(Player *player, const ItemTemplate *source, const ItemTemplate *target) const
@@ -1829,8 +2151,28 @@ bool Transmogrification::SpendVotePoints(Player* player, uint32 amount) const
     if (!currency || currency->GetVP() < amount)
         return false;
 
+    uint32 const before = currency->GetVP();
     currency->ModifyVP(-static_cast<int32>(amount));
-    return true;
+    if (currency->GetVP() == before - amount)
+        return true;
+
+    if (currency->GetVP() < before)
+        currency->ModifyVP(static_cast<int32>(before - currency->GetVP()));
+    return false;
+}
+
+bool Transmogrification::RefundVotePoints(Player* player, uint32 amount) const
+{
+    if (amount == 0)
+        return true;
+    if (!player || !player->GetSession() || amount > uint32(std::numeric_limits<int32>::max()))
+        return false;
+    AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
+    if (!currency)
+        return false;
+    uint32 const before = currency->GetVP();
+    currency->ModifyVP(static_cast<int32>(amount));
+    return currency->GetVP() == before + amount;
 }
 
 bool Transmogrification::GetFreeTransmogEnabled() const

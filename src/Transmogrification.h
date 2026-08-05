@@ -83,6 +83,29 @@ enum TransmogPaymentType : uint8
     TMOG_PAY_GOLD_AND_VOTE_POINTS = 2
 };
 
+// Stable machine-readable compatibility outcomes shared by browsing, staging,
+// saved outfits, and final application. Keep numeric values stable because the
+// Portable Transmog v2 gossip protocol publishes them to the Wrath client.
+enum class TransmogCompatibilityFailure : uint8
+{
+    None = 0,
+    MissingTemplate = 1,
+    SameItem = 2,
+    DuplicateDisplay = 3,
+    ItemClass = 4,
+    Quality = 5,
+    ClassOrRace = 6,
+    RequiredSkillOrSpell = 7,
+    ArmorSubclass = 8,
+    WeaponFamily = 9,
+    Handedness = 10,
+    TargetSlot = 11,
+    RangedFamily = 12,
+    ExplicitlyBlocked = 13,
+    Level = 14,
+    EventOrStats = 15
+};
+
 enum ArmorClassSpellIDs
 {
     SPELL_PLATE   = 750,
@@ -150,6 +173,12 @@ public:
         uint32 tokens = 0;
         uint32 changedSlots = 0;
         bool freeOutfit = false;
+    };
+
+    struct CompatibilityResult
+    {
+        bool allowed = false;
+        TransmogCompatibilityFailure failure = TransmogCompatibilityFailure::MissingTemplate;
     };
 
     typedef std::map<uint8, OutfitDraftSlot> outfitDraft;
@@ -299,6 +328,9 @@ public:
     TransmogAcoreStrings Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost = false);
     TransmogAcoreStrings Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost = false, bool hidden_transmog = false);
     bool CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* destination, ItemTemplate const* source, bool ignoreSourceLevelRequirement = false) const;
+    CompatibilityResult EvaluateCompatibility(Player* player, ItemTemplate const* destination, ItemTemplate const* source, bool ignoreSourceLevelRequirement = false) const;
+    static char const* GetCompatibilityFailureName(TransmogCompatibilityFailure failure);
+    static char const* GetCompatibilityFailurePlayerText(TransmogCompatibilityFailure failure);
     bool SuitableForTransmogrification(Player* player, ItemTemplate const* proto, bool ignoreLevelRequirement = false) const;
     bool SuitableForTransmogrification(ObjectGuid guid, ItemTemplate const* proto) const;
     bool IsItemTransmogrifiable(ItemTemplate const* proto, ObjectGuid const &playerGuid) const;
@@ -319,6 +351,7 @@ public:
     // Account Vote Points helpers (used by gossip/preset scripts)
     bool HasVotePoints(Player* player, uint32 amount) const;
     bool SpendVotePoints(Player* player, uint32 amount) const;
+    bool RefundVotePoints(Player* player, uint32 amount) const;
 
     bool GetFreeTransmogEnabled() const;
     uint32 GetFreeTransmogCooldownSeconds() const;
