@@ -100,17 +100,35 @@ static std::string GetRtgTransmogActionMarker(std::string const& action, uint32 
 struct TransmogBrowseStats
 {
     uint32 sourceEntries = 0;
+    uint32 inventoryEntries = 0;
+    uint32 collectionEntries = 0;
     uint32 compatibleEntries = 0;
     uint32 uniqueAppearances = 0;
+};
+
+struct TransmogBrowseEntry
+{
+    ItemTemplate const* item = nullptr;
+    bool fromInventory = false;
+    bool fromCollection = false;
 };
 
 static std::string GetRtgTransmogPageMarker(uint8 slot, TransmogBrowseStats const& stats, uint32 page, uint32 pages)
 {
     return " |cff010101[RTGTMOGPAGE:" + std::to_string(uint32(slot + 1)) + ":"
         + std::to_string(stats.sourceEntries) + ":"
+        + std::to_string(stats.inventoryEntries) + ":"
+        + std::to_string(stats.collectionEntries) + ":"
         + std::to_string(stats.compatibleEntries) + ":"
         + std::to_string(stats.uniqueAppearances) + ":"
         + std::to_string(page) + ":" + std::to_string(pages) + "]|r";
+}
+
+static std::string GetRtgTransmogSourceMarker(TransmogBrowseEntry const& entry)
+{
+    char const* source = entry.fromInventory && entry.fromCollection ? "both"
+        : (entry.fromInventory ? "inventory" : "collection");
+    return " |cff010101[RTGTMOGSOURCE:" + std::string(source) + "]|r";
 }
 
 static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
@@ -483,18 +501,17 @@ int32 GetTransmogSetPrice(uint64 baseCopper)
 }
 #endif
 
-bool ValidForTransmog(Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate)
+bool ValidForTransmog(Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate,
+    bool ignoreSourceLevelRequirement)
 {
     if (!player || !targetTemplate || !sourceTemplate)
         return false;
 
-    if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
-        return false;
-
-    return true;
+    return sT->CanTransmogrifyItemWithItem(
+        player, targetTemplate, sourceTemplate, ignoreSourceLevelRequirement);
 }
 
-bool CmpTmog (ItemTemplate const* first, ItemTemplate const* second)
+bool CmpTmog(ItemTemplate const* first, ItemTemplate const* second)
 {
     if (!first || !second)
         return second != nullptr;
@@ -505,9 +522,9 @@ bool CmpTmog (ItemTemplate const* first, ItemTemplate const* second)
         < std::tie(secondQuality, second->Name1, second->ItemId);
 }
 
-std::vector<ItemTemplate const*> GetValidTransmogs(Player* player, Item* target, TransmogBrowseStats* stats = nullptr)
+std::vector<TransmogBrowseEntry> GetValidTransmogs(Player* player, Item* target, TransmogBrowseStats* stats = nullptr)
 {
-    std::vector<ItemTemplate const*> allowedItems;
+    std::vector<TransmogBrowseEntry> allowedItems;
     if (!player || !target)
         return allowedItems;
 
@@ -515,45 +532,56 @@ std::vector<ItemTemplate const*> GetValidTransmogs(Player* player, Item* target,
     if (!targetTemplate)
         return allowedItems;
 
-    // Merge Character Appearance Memory with every item currently equipped or
-    // carried. The collection remains the durable source, while live inventory
-    // is an immediate fallback so a newly looted item can be previewed before an
-    // asynchronous discovery write has completed.
-    std::unordered_set<uint32> seenEntries;
-    auto addSource = [&](ItemTemplate const* sourceTemplate)
+    // Inventory is the immediate, player-visible source of truth. It is scanned
+    // before Appearance Memory so carried candidates always win sorting and
+    // duplicate-display selection. RTG transmog-only items commonly retain their
+    // original expansion level requirement, so carried sources bypass only that
+    // source-level gate; class, race, skill, weapon family, handedness, quality,
+    // and target-slot compatibility remain enforced. The published inventory and
+    // collection counts represent compatible candidates, while sourceEntries is
+    // the complete number of unique sources examined.
+    std::unordered_map<uint32, std::size_t> candidateByEntry;
+    std::unordered_set<uint32> inventorySources;
+    std::unordered_set<uint32> collectionSources;
+    std::unordered_set<uint32> allSources;
+
+    auto addSource = [&](ItemTemplate const* sourceTemplate, bool fromInventory, bool fromCollection)
     {
         if (!sourceTemplate)
             return;
 
         uint32 const entry = sourceTemplate->ItemId;
-        if (!seenEntries.insert(entry).second)
+        allSources.insert(entry);
+
+        bool const ignoreSourceLevelRequirement = fromInventory;
+        if (!ValidForTransmog(player, targetTemplate, sourceTemplate, ignoreSourceLevelRequirement))
             return;
 
-        if (stats)
-            ++stats->sourceEntries;
+        if (fromInventory)
+            inventorySources.insert(entry);
+        if (fromCollection)
+            collectionSources.insert(entry);
 
-        if (!ValidForTransmog(player, targetTemplate, sourceTemplate))
+        auto existing = candidateByEntry.find(entry);
+        if (existing != candidateByEntry.end())
+        {
+            TransmogBrowseEntry& candidate = allowedItems[existing->second];
+            candidate.fromInventory = candidate.fromInventory || fromInventory;
+            candidate.fromCollection = candidate.fromCollection || fromCollection;
             return;
+        }
 
-        allowedItems.push_back(sourceTemplate);
+        candidateByEntry.emplace(entry, allowedItems.size());
+        allowedItems.push_back({ sourceTemplate, fromInventory, fromCollection });
     };
-
-    if (sT->GetUseCollectionSystem())
-    {
-        uint32 const ownerGuid = player->GetGUID().GetCounter();
-        auto const collectionItr = sT->collectionCache.find(ownerGuid);
-        if (collectionItr != sT->collectionCache.end())
-            for (uint32 itemId : collectionItr->second)
-                addSource(sObjectMgr->GetItemTemplate(itemId));
-    }
 
     for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
         if (Item* sourceItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
-            addSource(sourceItem->GetTemplate());
+            addSource(sourceItem->GetTemplate(), true, false);
 
     for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
         if (Item* sourceItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-            addSource(sourceItem->GetTemplate());
+            addSource(sourceItem->GetTemplate(), true, false);
 
     for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
     {
@@ -563,23 +591,45 @@ std::vector<ItemTemplate const*> GetValidTransmogs(Player* player, Item* target,
 
         for (uint32 j = 0; j < bag->GetBagSize(); ++j)
             if (Item* sourceItem = player->GetItemByPos(i, j))
-                addSource(sourceItem->GetTemplate());
+                addSource(sourceItem->GetTemplate(), true, false);
+    }
+
+    if (sT->GetUseCollectionSystem())
+    {
+        uint32 const ownerGuid = player->GetGUID().GetCounter();
+        auto const collectionItr = sT->collectionCache.find(ownerGuid);
+        if (collectionItr != sT->collectionCache.end())
+            for (uint32 itemId : collectionItr->second)
+                addSource(sObjectMgr->GetItemTemplate(itemId), false, true);
     }
 
     if (stats)
+    {
+        stats->sourceEntries = uint32(allSources.size());
+        stats->inventoryEntries = uint32(inventorySources.size());
+        stats->collectionEntries = uint32(collectionSources.size());
         stats->compatibleEntries = uint32(allowedItems.size());
+    }
 
     if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true))
-        std::sort(allowedItems.begin(), allowedItems.end(), CmpTmog);
-
-    // Show one representative per model. The Trophy Collection still retains
-    // every earned item, but the picker stays concise and avoids duplicate art.
-    std::unordered_set<uint32> addedDisplays;
-    allowedItems.erase(std::remove_if(allowedItems.begin(), allowedItems.end(), [&](ItemTemplate const* item)
     {
-        if (!item)
+        std::stable_sort(allowedItems.begin(), allowedItems.end(), [](TransmogBrowseEntry const& first, TransmogBrowseEntry const& second)
+        {
+            if (first.fromInventory != second.fromInventory)
+                return first.fromInventory;
+            return CmpTmog(first.item, second.item);
+        });
+    }
+
+    // Show one representative per model. Because inventory entries sort first,
+    // an appearance physically carried by the player is never hidden behind the
+    // same model from Appearance Memory.
+    std::unordered_set<uint32> addedDisplays;
+    allowedItems.erase(std::remove_if(allowedItems.begin(), allowedItems.end(), [&](TransmogBrowseEntry const& entry)
+    {
+        if (!entry.item)
             return true;
-        return !addedDisplays.insert(item->DisplayInfoID).second;
+        return !addedDisplays.insert(entry.item->DisplayInfoID).second;
     }), allowedItems.end());
 
     if (stats)
@@ -1497,7 +1547,7 @@ public:
         player->PlayerTalkClass->ClearMenus();
         sender = DecodeTransmogCodeSender(sender);
         // Text input is reserved for naming Saved Outfits. Appearance filtering
-        // now lives inside the RTG drawer and never opens Blizzard's hidden
+        // now lives inside the RTG side panel and never opens Blizzard's hidden
         // gossip input popup.
         if (sender)
             return true;
@@ -1572,7 +1622,7 @@ public:
             uint32 existingTransmog = sT->GetFakeEntry(oldItem->GetGUID());
             uint32 price = GetTransmogPrice(oldItem->GetTemplate());
             bool freeTransmogReady = sT->HasFreeTransmogReady(player);
-            std::vector<ItemTemplate const*> allowedItems = GetValidTransmogs(player, oldItem, &browseStats);
+            std::vector<TransmogBrowseEntry> allowedItems = GetValidTransmogs(player, oldItem, &browseStats);
             totalPages = std::max<uint32>(1, uint32((allowedItems.size() + pageItemCapacity - 1) / pageItemCapacity));
             pageNumber = uint16(std::min<uint32>(pageNumber, totalPages - 1));
             uint32 const startValue = uint32(pageNumber) * pageItemCapacity;
@@ -1580,7 +1630,8 @@ public:
 
             for (uint32 i = startValue; i < endValue; ++i)
             {
-                ItemTemplate const* newItem = allowedItems[i];
+                TransmogBrowseEntry const& browseEntry = allowedItems[i];
+                ItemTemplate const* newItem = browseEntry.item;
                 if (!newItem)
                     continue;
 
@@ -1608,6 +1659,7 @@ public:
 
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
                     lineText + "  |cffffcc00— Preview|r"
+                        + GetRtgTransmogSourceMarker(browseEntry)
                         + GetRtgTransmogActionMarker("stage", uint32(slot + 1), newItem->ItemId),
                     slot, newItem->ItemId);
             }
@@ -1762,7 +1814,7 @@ public:
         }
         ItemTemplate const* targetTemplate = targetItem->GetTemplate();
 
-        std::vector<ItemTemplate const*> itemList = GetValidTransmogs(player, targetItem);
+        std::vector<TransmogBrowseEntry> itemList = GetValidTransmogs(player, targetItem);
         std::vector<ItemTemplate const*> spoofedItems = GetSpoofedVendorItems(targetItem);
 
         uint32 itemCount = itemList.size();
@@ -1789,7 +1841,7 @@ public:
         uint32 existingTransmog = sT->GetFakeEntry(targetItem->GetGUID());
         for (uint32 i = 0; i < itemCount && count < MAX_VENDOR_ITEMS; ++i)
         {
-            ItemTemplate const* _proto = itemList[i];
+            ItemTemplate const* _proto = itemList[i].item;
             if (_proto)
             {
                 uint32 itemPrice = _proto->ItemId == existingTransmog ? 0u : price;

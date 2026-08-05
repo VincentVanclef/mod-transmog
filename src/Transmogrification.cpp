@@ -565,7 +565,8 @@ bool Transmogrification::StageOutfitAppearance(Player* player, uint8 slot, uint3
         }
 
         ItemTemplate const* source = sObjectMgr->GetItemTemplate(normalized);
-        if (!source || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source))
+        bool const carriedSource = player->HasItemCount(normalized, 1, false);
+        if (!source || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source, carriedSource))
         {
             error = "That appearance is not compatible with the equipped item.";
             return false;
@@ -722,8 +723,9 @@ Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Pl
         else if (appearance != 0)
         {
             ItemTemplate const* source = sObjectMgr->GetItemTemplate(appearance);
+            bool const carriedSource = player->HasItemCount(appearance, 1, false);
             if (!CharacterCanUseAppearance(player, appearance) || !source
-                || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source))
+                || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source, carriedSource))
             {
                 fail("One previewed appearance is no longer owned or compatible.");
                 return summary;
@@ -1048,7 +1050,7 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
     return LANG_ERR_TRANSMOG_OK;
 }
 
-bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target, ItemTemplate const* source) const
+bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target, ItemTemplate const* source, bool ignoreSourceLevelRequirement) const
 {
 
     if (!target || !source)
@@ -1081,7 +1083,8 @@ bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplat
         target->InventoryType == INVTYPE_QUIVER)
         return false;
 
-    if (!SuitableForTransmogrification(player, target) || !SuitableForTransmogrification(player, source))
+    if (!SuitableForTransmogrification(player, target, false)
+        || !SuitableForTransmogrification(player, source, ignoreSourceLevelRequirement))
         return false;
 
     if (IsRangedWeapon(source->Class, source->SubClass) != IsRangedWeapon(target->Class, target->SubClass))
@@ -1219,7 +1222,7 @@ bool Transmogrification::IsTieredArmorSubclass(uint32 subclass) const
     return subclass == ITEM_SUBCLASS_ARMOR_PLATE || subclass == ITEM_SUBCLASS_ARMOR_MAIL || subclass == ITEM_SUBCLASS_ARMOR_LEATHER || subclass == ITEM_SUBCLASS_ARMOR_CLOTH;
 }
 
-bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTemplate const* proto) const
+bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTemplate const* proto, bool ignoreLevelRequirement) const
 {
     // ItemTemplate const* proto = item->GetTemplate();
     if (!player || !proto)
@@ -1277,7 +1280,7 @@ bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTempl
             return false;
     }
 
-    if (!IgnoreLevelRequirement(player->GetGUID()) && player->GetLevel() < proto->RequiredLevel)
+    if (!ignoreLevelRequirement && !IgnoreLevelRequirement(player->GetGUID()) && player->GetLevel() < proto->RequiredLevel)
         return false;
 
     if (AllowLowerTiers && TierAvailable(player, 0, proto->SubClass))
