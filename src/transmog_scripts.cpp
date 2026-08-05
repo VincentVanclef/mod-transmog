@@ -1631,12 +1631,6 @@ public:
             uint32 existingTransmog = sT->GetFakeEntry(oldItem->GetGUID());
             uint32 price = GetTransmogPrice(oldItem->GetTemplate());
             bool freeTransmogReady = sT->HasFreeTransmogReady(player);
-            std::ostringstream ss;
-            ss << std::endl;
-            if (sT->GetRequireToken() && !freeTransmogReady)
-                ss << std::endl << std::endl << sT->GetTokenAmount() << " x " << sT->GetItemLink(sT->GetTokenEntry(), session);
-            std::string lineEnd = ss.str();
-
             std::unordered_map<uint32, std::string>::iterator searchStringIterator = sT->searchStringByPlayer.find(player->GetGUID().GetCounter());
             hasSearchString = !(searchStringIterator == sT->searchStringByPlayer.end());
             std::string searchDisplayValue(hasSearchString ? searchStringIterator->second : GetLocaleText(locale, "search"));
@@ -1695,16 +1689,12 @@ public:
                         uint32 const vpCost = paymentType == 0 ? 0u : GetTransmogVotePointPrice(price);
 
                         std::string lineText = sT->GetItemIcon(newItem->ItemId, 30, 30, -18, 0) + sT->GetItemLink(newItem->ItemId, session);
-                        std::string confirmText = GetLocaleText(locale, "confirm_use_item") + sT->GetItemIcon(newItem->ItemId, 40, 40, -15, -10) + sT->GetItemLink(newItem->ItemId, session) + lineEnd;
 
                         bool isCurrentAppearance = existingTransmog == newItem->ItemId;
                         if (isCurrentAppearance)
                         {
                             lineText += "  |cff00ff00(Currently Applied)|r";
-                            confirmText += "\n\n|cff00ff00This appearance is already applied. You will not be charged.|r";
                         }
-                        else if (existingTransmog)
-                            confirmText += "\n\n|cffffcc00This will replace the currently applied appearance.|r";
 
                         // Colored VP text
                         auto vpText = [&](uint32 vp) -> std::string
@@ -1714,32 +1704,26 @@ public:
                             return os.str();
                         };
 
-                        uint32 boxMoney = isCurrentAppearance ? 0u : price; // copper shown in UI (gold cost column)
                         bool paidTransmog = sT->GetRequireToken() || price > 0;
 
                         if (!isCurrentAppearance && freeTransmogReady && paidTransmog)
                         {
-                            boxMoney = 0;
                             lineText += "  -  |cff00ff00FREE READY|r";
-                            confirmText += "\n\n|cff00ff00Your free 90-minute transmog use will be consumed.|r";
                         }
                         else if (!isCurrentAppearance && paymentType == 1)
                         {
-                            // VP-only: show no coin cost in the UI, display VP in the line text
-                            boxMoney = 0;
+                            // VP-only: display VP in the appearance row.
                             if (vpCost > 0)
                             {
                                 lineText += "  -  Cost: " + vpText(vpCost);
-                                confirmText += "\n\nCost: " + vpText(vpCost);
                             }
                         }
                         else if (!isCurrentAppearance && paymentType == 2)
                         {
-                            // Gold + VP: keep coin cost in UI, append VP to the line text
+                            // Gold + VP: append the VP component; the complete outfit footer owns the combined price
                             if (vpCost > 0)
                             {
                                 lineText += "  +  " + vpText(vpCost);
-                                confirmText += "\n\nVote Points: " + vpText(vpCost);
                             }
                         }
 
