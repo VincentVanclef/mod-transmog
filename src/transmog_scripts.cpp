@@ -537,36 +537,7 @@ std::string GetLocaleText(LocaleConstant locale, const std::string& titleType) {
 
 uint32 GetTransmogPrice(ItemTemplate const* targetItem)
 {
-    if (!targetItem)
-        return 0;
-
-    double const scaled = double(sT->GetSpecialPrice(targetItem)) * double(sT->GetScaledCostModifier());
-    if (!std::isfinite(scaled))
-        return uint32(std::numeric_limits<int32>::max());
-
-    double const total = scaled + double(sT->GetCopperCost());
-    if (total <= 0.0)
-        return 0;
-    if (total >= double(std::numeric_limits<int32>::max()))
-        return uint32(std::numeric_limits<int32>::max());
-    return uint32(total);
-}
-
-uint32 GetTransmogVotePointPrice(uint32 copperPrice)
-{
-    if (!copperPrice)
-        return 0;
-
-    uint64 const maximumCharge = uint64(std::numeric_limits<int32>::max());
-    uint64 const flat = std::min<uint64>(sT->GetVotePointsFlatCost(), maximumCharge);
-    float const perGold = sT->GetVotePointsPerGold();
-    if (!std::isfinite(perGold) || perGold <= 0.0f)
-        return uint32(flat);
-
-    double const scaled = std::ceil((double(copperPrice) / 10000.0) * double(perGold));
-    if (!std::isfinite(scaled) || scaled >= double(maximumCharge - flat))
-        return uint32(maximumCharge);
-    return uint32(flat + uint64(std::max(0.0, scaled)));
+    return sT->CalculateTransmogPrice(targetItem, false).baseCopper;
 }
 
 #ifdef PRESETS
@@ -869,8 +840,8 @@ static void ShowOutfitReview(Player* player, Creature* creature)
     std::string error;
     Transmogrification::OutfitCostSummary cost = sT->CalculateOutfitCost(player, &error);
     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-        "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Outfit Preview|r — "
-            + std::to_string(draft->size()) + " staged slot" + (draft->size() == 1 ? "" : "s")
+        "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Appearance Preview|r — "
+            + std::to_string(draft->size()) + " previewed slot" + (draft->size() == 1 ? "" : "s")
             + GetRtgOutfitSummaryMarker(player),
         TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
 
@@ -893,7 +864,7 @@ static void ShowOutfitReview(Player* player, Creature* creature)
     if (!error.empty())
         priceText = "|cffff5555" + error + "|r";
     else if (cost.freeOutfit)
-        priceText = "|cff00ff00Your ready free use covers this complete outfit.|r";
+        priceText = "|cff00ff00Your ready free use covers this preview.|r";
     else
     {
         std::vector<std::string> parts;
@@ -916,9 +887,9 @@ static void ShowOutfitReview(Player* player, Creature* creature)
 
     if (error.empty() && cost.changedSlots)
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-            "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Complete Outfit|r",
+            "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Preview|r",
             TRANSMOG_OUTFIT_APPLY_SENDER, 0,
-            "Apply every reviewed appearance as one complete outfit?\n\n" + priceText,
+            "Apply the previewed appearance changes?\n\n" + priceText,
             0, false);
 #ifdef PRESETS
     if (sT->GetEnableSets() && sT->presetByName[player->GetGUID()].size() < sT->GetMaxSets())
@@ -1204,19 +1175,19 @@ public:
             }
 
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Review Outfit Preview|r ("
+                "|TInterface/ICONS/INV_Misc_Statue_02:30:30:-18:0|t|cffffcc00Review Appearance Preview|r ("
                     + std::to_string(draft->size()) + ")" + GetRtgOutfitSummaryMarker(player)
                     + GetRtgTransmogActionMarker("review"),
                 TRANSMOG_OUTFIT_REVIEW_SENDER, 0);
             if (outfitError.empty() && outfitCost.changedSlots)
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                    "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Complete Outfit|r"
+                    "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Preview|r"
                         + GetRtgTransmogActionMarker("apply"),
                     TRANSMOG_OUTFIT_APPLY_SENDER, 0,
-                    "Apply every staged appearance as one complete outfit?\n\n" + priceText,
+                    "Apply the previewed appearance changes?\n\n" + priceText,
                     0, false);
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview"
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Preview"
                     + GetRtgTransmogActionMarker("clear"),
                 TRANSMOG_OUTFIT_CLEAR_SENDER, 0);
 #ifdef PRESETS
@@ -1289,7 +1260,7 @@ public:
             bool const success = sT->ClearOutfitDraft(player);
             SetRtgTransmogProtocolContext(player, "root", "clear", 0, 0, success, 0,
                 success ? 0u : 108u);
-            session->SendAreaTriggerMessage("Outfit preview cleared. Nothing was charged.");
+            session->SendAreaTriggerMessage("Appearance preview cleared. Nothing was charged.");
             OnGossipHello(player, creature);
             return true;
         }
@@ -1305,7 +1276,7 @@ public:
             SetRtgTransmogProtocolContext(player, "slot", "revert", uint32(slot + 1), 0,
                 success, 0, success ? 0u : 108u);
             if (success)
-                session->SendAreaTriggerMessage("Staged slot change reverted. Nothing was charged.");
+                session->SendAreaTriggerMessage("Slot preview cleared. Nothing was charged.");
             ShowTransmogItemsInGossipMenu(player, creature, slot, EQUIPMENT_SLOT_END);
             return true;
         }
@@ -1667,7 +1638,7 @@ public:
                 if (!success)
                     ChatHandler(session).SendSysMessage(error);
                 else
-                    session->SendAreaTriggerMessage("Appearance staged. Nothing has been charged.");
+                    session->SendAreaTriggerMessage("Appearance previewed. Nothing has been charged.");
                 ShowTransmogItemsInGossipMenu(player, creature, uint8(sender), EQUIPMENT_SLOT_END);
             } break;
         }
@@ -1753,7 +1724,9 @@ public:
         if (oldItem)
         {
             uint32 existingTransmog = sT->GetFakeEntry(oldItem->GetGUID());
-            uint32 price = GetTransmogPrice(oldItem->GetTemplate());
+            Transmogrification::TransmogPrice const slotPrice =
+                sT->CalculateTransmogPrice(oldItem->GetTemplate());
+            uint32 const price = slotPrice.baseCopper;
             bool freeTransmogReady = sT->HasFreeTransmogReady(player);
             std::vector<TransmogBrowseEntry> allowedItems = GetValidTransmogs(player, oldItem, &browseStats);
             totalPages = std::max<uint32>(1, uint32((allowedItems.size() + pageItemCapacity - 1) / pageItemCapacity));
@@ -1769,7 +1742,7 @@ public:
                     continue;
 
                 uint8 paymentType = sT->GetPaymentType();
-                uint32 const vpCost = paymentType == 0 ? 0u : GetTransmogVotePointPrice(price);
+                uint32 const vpCost = slotPrice.votePoints;
                 std::string lineText = sT->GetItemIcon(newItem->ItemId, 30, 30, -18, 0) + sT->GetItemLink(newItem->ItemId, session);
                 bool const isCurrentAppearance = existingTransmog == newItem->ItemId;
                 if (isCurrentAppearance)
@@ -1863,14 +1836,14 @@ public:
                     }
                 }
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                    "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Complete Outfit|r"
+                    "|TInterface/Buttons/UI-CheckBox-Check:30:30:-18:0|t|cff00ff00Apply Preview|r"
                         + GetRtgOutfitSummaryMarker(player) + GetRtgTransmogActionMarker("apply"),
                     TRANSMOG_OUTFIT_APPLY_SENDER, 0,
-                    "Apply every staged appearance as one complete outfit?\n\n" + priceText,
+                    "Apply the previewed appearance changes?\n\n" + priceText,
                     0, false);
             }
             AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Outfit Preview"
+                "|TInterface/PaperDollInfoFrame/UI-GearManager-LeaveItem-Opaque:30:30:-18:0|tClear Preview"
                     + GetRtgOutfitSummaryMarker(player) + GetRtgTransmogActionMarker("clear"),
                 TRANSMOG_OUTFIT_CLEAR_SENDER, 0);
         }
@@ -2462,7 +2435,7 @@ namespace RTG::Services::Transmog
         SetRtgTransmogProtocolContext(player, "slot", "stage", inventorySlot, appearanceEntry,
             success, requestToken, reason);
         if (success)
-            player->GetSession()->SendAreaTriggerMessage("Appearance staged. Nothing has been charged.");
+            player->GetSession()->SendAreaTriggerMessage("Appearance previewed. Nothing has been charged.");
         else
             ChatHandler(player->GetSession()).SendSysMessage(error);
         return ShowProtocolSlotPage(player, inventorySlot);
@@ -2491,7 +2464,7 @@ namespace RTG::Services::Transmog
         SetRtgTransmogProtocolContext(player, "slot", "revert", inventorySlot, 0,
             success, requestToken, success ? 0u : 108u);
         if (success)
-            player->GetSession()->SendAreaTriggerMessage("Staged slot change reverted. Nothing was charged.");
+            player->GetSession()->SendAreaTriggerMessage("Slot preview cleared. Nothing was charged.");
         return ShowProtocolSlotPage(player, inventorySlot);
     }
 
@@ -2511,7 +2484,7 @@ namespace RTG::Services::Transmog
         SetRtgTransmogProtocolContext(player, "root", "clear", 0, 0, success,
             requestToken, success ? 0u : 108u);
         if (success)
-            player->GetSession()->SendAreaTriggerMessage("Outfit preview cleared. Nothing was charged.");
+            player->GetSession()->SendAreaTriggerMessage("Appearance preview cleared. Nothing was charged.");
         npc_transmogrifier script;
         return script.OnGossipHello(player, nullptr);
     }

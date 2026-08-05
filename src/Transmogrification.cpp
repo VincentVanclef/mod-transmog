@@ -656,6 +656,45 @@ Transmogrification::outfitDraft const* Transmogrification::GetOutfitDraft(Player
     return itr == outfitDraftByGuid.end() || itr->second.empty() ? nullptr : &itr->second;
 }
 
+Transmogrification::TransmogPrice Transmogrification::CalculateTransmogPrice(
+    ItemTemplate const* target, bool includeToken) const
+{
+    TransmogPrice price;
+    if (!target)
+        return price;
+
+    // Keep the original single-item price rules authoritative. Outfit preview
+    // totals are a sum of this result, never a separately implemented formula.
+    double const scaled = double(GetSpecialPrice(target)) * double(ScaledCostModifier);
+    double const total = scaled + double(CopperCost);
+    if (!std::isfinite(scaled) || !std::isfinite(total) || total >= double(std::numeric_limits<int32>::max()))
+        price.baseCopper = uint32(std::numeric_limits<int32>::max());
+    else if (total > 0.0)
+        price.baseCopper = uint32(total);
+
+    if (price.baseCopper > 0)
+    {
+        if (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
+            price.copper = price.baseCopper;
+
+        if (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
+        {
+            uint64 const maximumCharge = uint64(std::numeric_limits<int32>::max());
+            uint64 const flat = std::min<uint64>(VotePointsFlatCost, maximumCharge);
+            double const gold = double(price.baseCopper) / 10000.0;
+            double const scaledVotePoints = std::ceil(gold * double(VotePointsPerGold));
+            if (!std::isfinite(scaledVotePoints) || scaledVotePoints >= double(maximumCharge - flat))
+                price.votePoints = uint32(maximumCharge);
+            else
+                price.votePoints = uint32(flat + uint64(std::max(0.0, scaledVotePoints)));
+        }
+    }
+
+    if (includeToken && RequireToken)
+        price.tokens = TokenAmount;
+    return price;
+}
+
 Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Player* player, std::string* error) const
 {
     OutfitCostSummary summary;
@@ -666,7 +705,7 @@ Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Pl
     if (!player || !draft)
     {
         if (error)
-            *error = "No outfit changes are being previewed.";
+            *error = "No appearance changes are being previewed.";
         return summary;
     }
 
@@ -676,37 +715,15 @@ Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Pl
             *error = message;
     };
 
-    auto slotCopper = [this](ItemTemplate const* target) -> uint64
-    {
-        if (!target)
-            return 0;
-        double const total = double(GetSpecialPrice(target)) * double(ScaledCostModifier) + double(CopperCost);
-        if (!std::isfinite(total) || total <= 0.0)
-            return 0;
-        return uint64(std::min<double>(std::ceil(total), double(std::numeric_limits<int64>::max())));
-    };
-
-    auto slotVotePoints = [this](uint64 copper) -> uint64
-    {
-        uint64 value = VotePointsFlatCost;
-        if (copper && VotePointsPerGold > 0.0f)
-        {
-            double const scaled = std::ceil((double(copper) / 10000.0) * double(VotePointsPerGold));
-            if (!std::isfinite(scaled))
-                return uint64(std::numeric_limits<uint32>::max()) + 1ULL;
-            value += uint64(std::max(0.0, scaled));
-        }
-        return value;
-    };
-
     uint64 votePoints = 0;
     uint64 tokens = 0;
+    bool wouldCharge = false;
     for (auto const& [slot, staged] : *draft)
     {
         Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
         if (!target || target->GetGUID().GetCounter() != staged.targetGuid || target->GetEntry() != staged.targetEntry)
         {
-            fail("Equipment changed after the outfit was previewed. Reopen the affected slot and choose its appearance again.");
+            fail("Equipment changed after the preview was created. Reopen the affected slot and choose its appearance again.");
             return summary;
         }
 
@@ -733,29 +750,24 @@ Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Pl
         }
 
         ++summary.changedSlots;
-        bool const chargeAppearance = appearance != 0
-            && !(appearance == HIDDEN_ITEM_ID && HiddenTransmogIsFree);
-        if (!chargeAppearance)
+        if (appearance == 0)
             continue;
 
-        uint64 const copper = slotCopper(target->GetTemplate());
-        if (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
-            summary.copper += copper;
-        if (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
-            votePoints += slotVotePoints(copper);
-        if (RequireToken)
-            tokens += TokenAmount;
+        TransmogPrice const price = CalculateTransmogPrice(target->GetTemplate());
+        summary.copper += price.copper;
+        votePoints += price.votePoints;
+        tokens += price.tokens;
+        wouldCharge = price.WouldCharge() || wouldCharge;
     }
 
     if (votePoints > std::numeric_limits<uint32>::max() || tokens > std::numeric_limits<uint32>::max())
     {
-        fail("The outfit cost is outside the supported range.");
+        fail("The combined preview cost is outside the supported range.");
         return OutfitCostSummary{};
     }
 
     summary.votePoints = uint32(votePoints);
     summary.tokens = uint32(tokens);
-    bool const wouldCharge = summary.copper > 0 || summary.votePoints > 0 || summary.tokens > 0;
     summary.freeOutfit = wouldCharge && HasFreeTransmogReady(player);
     if (summary.freeOutfit)
     {
@@ -783,278 +795,62 @@ bool Transmogrification::ApplyOutfitDraft(Player* player, std::string& result)
     }
     if (cost.copper > uint64(std::numeric_limits<uint32>::max()) || !player->HasEnoughMoney(uint32(cost.copper)))
     {
-        result = "You do not have enough money for the complete outfit.";
+        result = "You do not have enough money for this appearance preview.";
         return false;
     }
     if (cost.votePoints && !HasVotePoints(player, cost.votePoints))
     {
-        result = "You do not have enough Vote Points for the complete outfit.";
+        result = "You do not have enough Vote Points for this appearance preview.";
         return false;
     }
     if (cost.tokens && !player->HasItemCount(TokenEntry, cost.tokens))
     {
-        result = "You do not have enough transmog tokens for the complete outfit.";
+        result = "You do not have enough transmog tokens for this appearance preview.";
         return false;
     }
 
-    uint32 const ownerGuid = player->GetGUID().GetCounter();
-    outfitDraft const draft = outfitDraftByGuid[ownerGuid];
-
-    struct AppearanceSnapshot
-    {
-        uint8 slot = 0;
-        Item* target = nullptr;
-        uint32 targetGuid = 0;
-        uint32 previousEntry = 0;
-        uint32 desiredEntry = 0;
-    };
-    std::vector<AppearanceSnapshot> snapshots;
-    snapshots.reserve(draft.size());
-    for (auto const& [slot, staged] : draft)
-    {
-        Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!target || GetFakeEntry(target->GetGUID()) == staged.appearanceEntry)
-            continue;
-        snapshots.push_back({ slot, target, target->GetGUID().GetCounter(),
-            GetFakeEntry(target->GetGUID()), staged.appearanceEntry });
-    }
-    if (snapshots.size() != cost.changedSlots)
-    {
-        result = "The equipped items changed while the outfit was being confirmed. No appearance was applied.";
-        return false;
-    }
-
-    bool previousFreeCooldownExists = false;
-    uint32 previousFreeCooldown = 0;
-    uint32 freeUseTimestamp = 0;
-    if (cost.freeOutfit)
-    {
-        if (QueryResult stored = CharacterDatabase.Query(
-            "SELECT `last_free_transmog_ts` FROM `custom_transmogrification_free_cooldown` WHERE `Owner`={} LIMIT 1",
-            ownerGuid))
-        {
-            previousFreeCooldownExists = true;
-            previousFreeCooldown = stored->Fetch()[0].Get<uint32>();
-        }
-        freeUseTimestamp = uint32(std::time(nullptr));
-    }
-
-    // Test-realm-only fault injection. This key is intentionally absent from
-    // transmog.conf.dist and defaults to disabled: 1=VP, 2=tokens, 3=money,
-    // 4=appearance/cooldown commit verification. It lets the real compensation
-    // path be exercised without shipping a player- or GM-facing command.
-    uint8 const testFailureStage = sConfigMgr->GetOption<uint8>(
-        "Transmogrification.Test.OutfitFailureStage", 0);
-
-    bool votePointsPaid = false;
-    uint32 tokensPaid = 0;
-    uint64 copperPaid = 0;
-    auto refundPayment = [&]()
-    {
-        bool refunded = true;
-        if (copperPaid)
-        {
-            player->ModifyMoney(int64(copperPaid), false);
-            copperPaid = 0;
-        }
-        if (tokensPaid)
-        {
-            if (!player->AddItem(TokenEntry, tokensPaid))
-                refunded = false;
-            tokensPaid = 0;
-        }
-        if (votePointsPaid)
-        {
-            refunded = RefundVotePoints(player, cost.votePoints) && refunded;
-            votePointsPaid = false;
-        }
-        return refunded;
-    };
-
-    // Charge each independently stored currency before touching appearance rows,
-    // verify the exact post-state, and compensate every earlier charge if a later
-    // mutation fails. The draft remains intact on every failure path.
+    // Use the original payment order and mutation calls. The outfit path only
+    // combines already-canonical per-slot totals; it is not a second economy.
     if (cost.votePoints)
     {
-        if (testFailureStage == 1)
-        {
-            result = "Injected Vote Point payment failure. No appearance was applied.";
-            LOG_WARN("module", "RTG Transmog: injected outfit VP failure for character {}.", ownerGuid);
-            return false;
-        }
         if (!SpendVotePoints(player, cost.votePoints))
         {
             result = "The Vote Point payment could not be completed. No appearance was applied.";
             return false;
         }
-        votePointsPaid = true;
     }
     if (cost.tokens)
-    {
-        if (testFailureStage == 2)
-        {
-            bool const refunded = refundPayment();
-            result = refunded
-                ? "Injected token payment failure. No appearance was applied."
-                : "Injected token failure could not fully restore the earlier payment. Contact an administrator.";
-            LOG_WARN("module", "RTG Transmog: injected outfit token failure for character {} (refund: {}).",
-                ownerGuid, refunded ? "complete" : "incomplete");
-            return false;
-        }
-        uint32 const before = player->GetItemCount(TokenEntry, false);
         player->DestroyItemCount(TokenEntry, cost.tokens, true);
-        uint32 const after = player->GetItemCount(TokenEntry, false);
-        tokensPaid = before > after ? before - after : 0;
-        if (tokensPaid != cost.tokens)
-        {
-            bool const refunded = refundPayment();
-            result = refunded
-                ? "The token payment could not be completed. No appearance was applied."
-                : "The token payment failed and could not be fully restored. Contact an administrator.";
-            return false;
-        }
-    }
     if (cost.copper)
-    {
-        if (testFailureStage == 3)
-        {
-            bool const refunded = refundPayment();
-            result = refunded
-                ? "Injected money payment failure. No appearance was applied."
-                : "Injected money failure could not fully restore the earlier payment. Contact an administrator.";
-            LOG_WARN("module", "RTG Transmog: injected outfit money failure for character {} (refund: {}).",
-                ownerGuid, refunded ? "complete" : "incomplete");
-            return false;
-        }
-        uint64 const before = player->GetMoney();
         player->ModifyMoney(-int64(cost.copper), false);
-        uint64 const after = player->GetMoney();
-        copperPaid = before > after ? before - after : 0;
-        if (copperPaid != cost.copper)
-        {
-            bool const refunded = refundPayment();
-            result = refunded
-                ? "The money payment could not be completed. No appearance was applied."
-                : "The money payment failed and could not be fully restored. Contact an administrator.";
-            return false;
-        }
-    }
 
-    auto writeAppearances = [&](bool desired)
+    uint32 const ownerGuid = player->GetGUID().GetCounter();
+    outfitDraft const draft = outfitDraftByGuid[ownerGuid];
+    for (auto const& [slot, staged] : draft)
     {
-        CharacterDatabaseTransaction transaction = CharacterDatabase.BeginTransaction();
-        for (AppearanceSnapshot const& snapshot : snapshots)
-        {
-            uint32 const entry = desired ? snapshot.desiredEntry : snapshot.previousEntry;
-            if (entry == 0)
-                DeleteFakeEntry(player, snapshot.slot, snapshot.target, &transaction);
-            else
-                SetFakeEntry(player, entry, snapshot.slot, snapshot.target, &transaction);
-        }
-        if (cost.freeOutfit)
-        {
-            if (desired)
-                transaction->Append(
-                    "REPLACE INTO `custom_transmogrification_free_cooldown` (`Owner`, `last_free_transmog_ts`) VALUES ({}, {})",
-                    ownerGuid, freeUseTimestamp);
-            else if (previousFreeCooldownExists)
-                transaction->Append(
-                    "REPLACE INTO `custom_transmogrification_free_cooldown` (`Owner`, `last_free_transmog_ts`) VALUES ({}, {})",
-                    ownerGuid, previousFreeCooldown);
-            else
-                transaction->Append(
-                    "DELETE FROM `custom_transmogrification_free_cooldown` WHERE `Owner`={}", ownerGuid);
-        }
-        CharacterDatabase.DirectCommitTransaction(transaction);
-    };
-    auto appearancesMatch = [&](bool desired)
-    {
-        for (AppearanceSnapshot const& snapshot : snapshots)
-        {
-            uint32 const expected = desired ? snapshot.desiredEntry : snapshot.previousEntry;
-            QueryResult stored = CharacterDatabase.Query(
-                "SELECT `FakeEntry` FROM `custom_transmogrification` WHERE `GUID`={} LIMIT 1",
-                snapshot.targetGuid);
-            if (expected == 0)
-            {
-                if (stored)
-                    return false;
-            }
-            else if (!stored || stored->Fetch()[0].Get<uint32>() != expected)
-                return false;
-        }
-        if (cost.freeOutfit)
-        {
-            QueryResult stored = CharacterDatabase.Query(
-                "SELECT `last_free_transmog_ts` FROM `custom_transmogrification_free_cooldown` WHERE `Owner`={} LIMIT 1",
-                ownerGuid);
-            if (desired)
-            {
-                if (!stored || stored->Fetch()[0].Get<uint32>() != freeUseTimestamp)
-                    return false;
-            }
-            else if (previousFreeCooldownExists)
-            {
-                if (!stored || stored->Fetch()[0].Get<uint32>() != previousFreeCooldown)
-                    return false;
-            }
-            else if (stored)
-                return false;
-        }
-        if (desired && testFailureStage == 4)
-            return false;
-        return true;
-    };
+        Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
+        if (!target || GetFakeEntry(target->GetGUID()) == staged.appearanceEntry)
+            continue;
 
-    writeAppearances(true);
-    if (!appearancesMatch(true))
-    {
-        // One idempotent retry distinguishes a transient commit/read failure from
-        // a persistent database problem. If it still fails, restore the captured
-        // prior appearance state before refunding the exact payment.
-        writeAppearances(true);
-        if (!appearancesMatch(true))
+        if (staged.appearanceEntry == 0)
+            DeleteFakeEntry(player, slot, target);
+        else
         {
-            writeAppearances(false);
-            if (appearancesMatch(false))
-            {
-                bool const refunded = refundPayment();
-                result = refunded
-                    ? "The appearance database did not accept the outfit. No appearance change or charge was kept."
-                    : "The outfit was restored, but its payment could not be fully refunded. Contact an administrator.";
-                LOG_ERROR("module", "RTG Transmog: outfit commit failed and was compensated for character {} (refund: {}).",
-                    ownerGuid, refunded ? "complete" : "incomplete");
-                return false;
-            }
-
-            // Never refund an unverified rollback: that could create the exact
-            // unpaid appearance failure this routine is designed to prevent.
-            result = "The Transmog database could not verify the outfit or its rollback. Payment was retained for safety; contact an administrator.";
-            LOG_ERROR("module", "RTG Transmog: CRITICAL unverified outfit and rollback for character {}; payment retained.", ownerGuid);
-            return false;
+            SetFakeEntry(player, staged.appearanceEntry, slot, target);
+            target->UpdatePlayedTime(player);
+            target->SetOwnerGUID(player->GetGUID());
+            target->SetNotRefundable(player);
+            target->ClearSoulboundTradeable(player);
         }
-    }
-
-    for (AppearanceSnapshot const& snapshot : snapshots)
-    {
-        snapshot.target->UpdatePlayedTime(player);
-        snapshot.target->SetNotRefundable(player);
-        snapshot.target->ClearSoulboundTradeable(player);
     }
     if (cost.freeOutfit)
-    {
-        uint64 const expires64 = uint64(freeUseTimestamp) + 120ULL;
-        PendingFreeTransmogUseByGuid[ownerGuid] = {
-            freeUseTimestamp,
-            uint32(std::min<uint64>(expires64, std::numeric_limits<uint32>::max()))
-        };
-    }
+        MarkFreeTransmogUsed(player);
     outfitDraftByGuid.erase(ownerGuid);
 
-    result = "Applied " + std::to_string(cost.changedSlots) + " outfit change";
+    result = "Applied " + std::to_string(cost.changedSlots) + " appearance change";
     if (cost.changedSlots != 1)
         result += "s";
-    result += " as one complete outfit.";
+    result += ".";
     return true;
 }
 
@@ -1087,66 +883,6 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, ObjectGuid
 
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost, bool hidden_transmog)
 {
-    int32 cost = 0;
-    auto calcCopperCost = [this](ItemTemplate const* itemTemplate) -> int32
-    {
-        if (!itemTemplate)
-            return 0;
-
-        // Preserve the configured additive discount while keeping malformed or
-        // extreme values inside the signed range consumed by money APIs.
-        double const scaled = double(GetSpecialPrice(itemTemplate)) * double(ScaledCostModifier);
-        if (!std::isfinite(scaled))
-            return std::numeric_limits<int32>::max();
-
-        double const total = scaled + double(CopperCost);
-        if (total <= 0.0)
-            return 0;
-        if (total >= double(std::numeric_limits<int32>::max()))
-            return std::numeric_limits<int32>::max();
-        return int32(total);
-    };
-
-    auto calcVotePointsCost = [this](int32 copperCost) -> uint32
-    {
-        uint64 const maximumCharge = uint64(std::numeric_limits<int32>::max());
-        uint64 const flat = std::min<uint64>(VotePointsFlatCost, maximumCharge);
-        if (copperCost <= 0 || VotePointsPerGold <= 0.0f)
-            return uint32(flat);
-
-        double const gold = static_cast<double>(copperCost) / 10000.0; // 1 gold = 10000 copper
-        double const scaledValue = std::ceil(gold * static_cast<double>(VotePointsPerGold));
-        if (!std::isfinite(scaledValue) || scaledValue >= double(maximumCharge - flat))
-            return uint32(maximumCharge);
-
-        return uint32(flat + uint64(std::max(0.0, scaledValue)));
-    };
-
-    auto hasVotePoints = [player](uint32 vpCost) -> bool
-    {
-        if (vpCost == 0)
-            return true;
-        if (!player || !player->GetSession())
-            return false;
-
-        AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
-        return currency && currency->GetVP() >= vpCost;
-    };
-
-    auto spendVotePoints = [player](uint32 vpCost) -> bool
-    {
-        if (vpCost == 0)
-            return true;
-        if (!player || !player->GetSession())
-            return false;
-
-        AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
-        if (!currency || currency->GetVP() < vpCost)
-            return false;
-
-        currency->ModifyVP(-static_cast<int32>(vpCost));
-        return true;
-    };
     // slot of the transmogrified item
     if (slot >= EQUIPMENT_SLOT_END)
     {
@@ -1164,29 +900,25 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
 
     if (hidden_transmog)
     {
-        cost = calcCopperCost(itemTransmogrified->GetTemplate());
+        TransmogPrice const price = CalculateTransmogPrice(itemTransmogrified->GetTemplate(), false);
 
-        bool const shouldCharge = !no_cost && !HiddenTransmogIsFree && cost > 0;
+        bool const shouldCharge = !no_cost && !HiddenTransmogIsFree && price.baseCopper > 0;
         bool const useFreeTransmog = shouldCharge && HasFreeTransmogReady(player);
 
         if (shouldCharge && !useFreeTransmog)
         {
-            bool const payGold = PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS;
-            bool const payVP = PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS;
-            uint32 const vpCost = payVP ? calcVotePointsCost(cost) : 0u;
-
             // Validate the entire mixed payment before consuming either
             // balance. Charging VP first could previously leave the player
             // short if the later gold check failed.
-            if (payVP && !hasVotePoints(vpCost))
+            if (price.votePoints && !HasVotePoints(player, price.votePoints))
                 return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-            if (payGold && !player->HasEnoughMoney(cost))
+            if (price.copper && !player->HasEnoughMoney(price.copper))
                 return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
 
-            if (payVP && !spendVotePoints(vpCost))
+            if (price.votePoints && !SpendVotePoints(player, price.votePoints))
                 return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-            if (payGold)
-                player->ModifyMoney(-cost, false);
+            if (price.copper)
+                player->ModifyMoney(-int64(price.copper), false);
         }
         SetFakeEntry(player, HIDDEN_ITEM_ID, slot, itemTransmogrified); // newEntry
         if (useFreeTransmog)
@@ -1210,37 +942,28 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
         bool useFreeTransmog = false;
         if (!no_cost)
         {
-            cost = calcCopperCost(itemTransmogrified->GetTemplate());
-
-            bool paidCost = cost > 0;
-            bool wouldCharge = RequireToken || paidCost;
-            useFreeTransmog = wouldCharge && HasFreeTransmogReady(player);
+            TransmogPrice const price = CalculateTransmogPrice(itemTransmogrified->GetTemplate());
+            useFreeTransmog = price.WouldCharge() && HasFreeTransmogReady(player);
 
             if (!useFreeTransmog)
             {
-                bool const payGold = cost > 0
-                    && (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
-                bool const payVP = cost > 0
-                    && (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
-                uint32 const vpCost = payVP ? calcVotePointsCost(cost) : 0u;
-
                 // Pass 1: validate token and every currency before consuming
                 // any of them. This keeps mixed token/gold/VP payments atomic
                 // from the player's perspective.
-                if (RequireToken && !player->HasItemCount(TokenEntry, TokenAmount))
+                if (price.tokens && !player->HasItemCount(TokenEntry, price.tokens))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_TOKENS;
-                if (payVP && !hasVotePoints(vpCost))
+                if (price.votePoints && !HasVotePoints(player, price.votePoints))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-                if (payGold && !player->HasEnoughMoney(cost))
+                if (price.copper && !player->HasEnoughMoney(price.copper))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
 
                 // Pass 2: consume the already-validated payment once.
-                if (payVP && !spendVotePoints(vpCost))
+                if (price.votePoints && !SpendVotePoints(player, price.votePoints))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-                if (RequireToken)
-                    player->DestroyItemCount(TokenEntry, TokenAmount, true);
-                if (payGold)
-                    player->ModifyMoney(-cost, false);
+                if (price.tokens)
+                    player->DestroyItemCount(TokenEntry, price.tokens, true);
+                if (price.copper)
+                    player->ModifyMoney(-int64(price.copper), false);
             }
         }
 
@@ -2151,28 +1874,8 @@ bool Transmogrification::SpendVotePoints(Player* player, uint32 amount) const
     if (!currency || currency->GetVP() < amount)
         return false;
 
-    uint32 const before = currency->GetVP();
     currency->ModifyVP(-static_cast<int32>(amount));
-    if (currency->GetVP() == before - amount)
-        return true;
-
-    if (currency->GetVP() < before)
-        currency->ModifyVP(static_cast<int32>(before - currency->GetVP()));
-    return false;
-}
-
-bool Transmogrification::RefundVotePoints(Player* player, uint32 amount) const
-{
-    if (amount == 0)
-        return true;
-    if (!player || !player->GetSession() || amount > uint32(std::numeric_limits<int32>::max()))
-        return false;
-    AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
-    if (!currency)
-        return false;
-    uint32 const before = currency->GetVP();
-    currency->ModifyVP(static_cast<int32>(amount));
-    return currency->GetVP() == before + amount;
+    return true;
 }
 
 bool Transmogrification::GetFreeTransmogEnabled() const

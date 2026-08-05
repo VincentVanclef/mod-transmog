@@ -175,6 +175,18 @@ public:
         bool freeOutfit = false;
     };
 
+    // Canonical per-slot price produced by the same rules used by the original
+    // single-item Transmogrify path. Outfit previews only add these values.
+    struct TransmogPrice
+    {
+        uint32 baseCopper = 0;
+        uint32 copper = 0;
+        uint32 votePoints = 0;
+        uint32 tokens = 0;
+
+        bool WouldCharge() const { return baseCopper > 0 || tokens > 0; }
+    };
+
     struct CompatibilityResult
     {
         bool allowed = false;
@@ -321,6 +333,7 @@ public:
     bool ClearOutfitDraft(Player* player);
     bool ClearOutfitDraftSlot(Player* player, uint8 slot);
     outfitDraft const* GetOutfitDraft(Player const* player) const;
+    TransmogPrice CalculateTransmogPrice(ItemTemplate const* target, bool includeToken = true) const;
     OutfitCostSummary CalculateOutfitCost(Player* player, std::string* error = nullptr) const;
     bool ApplyOutfitDraft(Player* player, std::string& result);
 
@@ -351,7 +364,6 @@ public:
     // Account Vote Points helpers (used by gossip/preset scripts)
     bool HasVotePoints(Player* player, uint32 amount) const;
     bool SpendVotePoints(Player* player, uint32 amount) const;
-    bool RefundVotePoints(Player* player, uint32 amount) const;
 
     bool GetFreeTransmogEnabled() const;
     uint32 GetFreeTransmogCooldownSeconds() const;
