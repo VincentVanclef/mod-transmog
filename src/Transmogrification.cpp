@@ -77,7 +77,12 @@ void Transmogrification::LoadPlayerSets(ObjectGuid pGUID)
                     LOG_ERROR("module", "Item entry (FakeEntry: {}, player: {}, slot: {}, presetId: {}) has invalid slot, ignoring.", entry, pGUID.ToString(), slot, PresetID);
                     continue;
                 }
-                if (entry == 0 || entry == HIDDEN_ITEM_ID || sObjectMgr->GetItemTemplate(entry))
+                if (entry == HIDDEN_ITEM_ID)
+                {
+                    LOG_WARN("module", "Ignoring legacy hidden appearance in saved outfit (player: {}, slot: {}, presetId: {}).", pGUID.ToString(), slot, PresetID);
+                    continue;
+                }
+                if (entry == 0 || sObjectMgr->GetItemTemplate(entry))
                     presetById[pGUID][PresetID][slot] = entry; // Transmogrification::Preset(presetName, fakeEntry);
             }
 
@@ -513,22 +518,20 @@ bool Transmogrification::CharacterCanUseAppearance(Player* player, uint32 itemEn
     if (!player || !itemEntry)
         return false;
     if (itemEntry == HIDDEN_ITEM_ID || itemEntry == UINT_MAX)
-        return GetAllowHiddenTransmog();
+        return false;
 
     uint32 const ownerGuid = player->GetGUID().GetCounter();
     auto const collectionItr = collectionCache.find(ownerGuid);
     if (collectionItr != collectionCache.end() && collectionItr->second.contains(itemEntry))
         return true;
 
-    // With character Appearance Memory enabled, the collection is authoritative.
-    // Acquisition hooks populate the cache before their asynchronous database write,
-    // so crafted, looted, purchased, equipped, and stored items are immediately usable
-    // without permitting another character's bank or a forged gossip action to bypass discovery.
-    if (GetUseCollectionSystem())
-        return false;
+    // Live possession is an immediate, authoritative fallback. This closes the
+    // short window between acquiring an item and the asynchronous Appearance
+    // Memory write/cache hook, and restores the expected inventory browser.
+    if (player->HasItemCount(itemEntry, 1, true))
+        return true;
 
-    // Collection-disabled deployments retain the original physical-item behavior.
-    return player->HasItemCount(itemEntry, 1, true);
+    return false;
 }
 
 bool Transmogrification::StageOutfitAppearance(Player* player, uint8 slot, uint32 appearanceEntry, std::string& error)
@@ -550,11 +553,8 @@ bool Transmogrification::StageOutfitAppearance(Player* player, uint8 slot, uint3
     uint32 normalized = appearanceEntry == UINT_MAX ? HIDDEN_ITEM_ID : appearanceEntry;
     if (normalized == HIDDEN_ITEM_ID)
     {
-        if (!AllowHiddenTransmog)
-        {
-            error = "That slot cannot be hidden right now.";
-            return false;
-        }
+        error = "Hidden equipment appearances are disabled on RTG.";
+        return false;
     }
     else if (normalized != 0)
     {
@@ -716,11 +716,8 @@ Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Pl
 
         if (appearance == HIDDEN_ITEM_ID)
         {
-            if (!AllowHiddenTransmog)
-            {
-                fail("One previewed slot can no longer be hidden.");
-                return summary;
-            }
+            fail("Hidden equipment appearances are disabled on RTG.");
+            return summary;
         }
         else if (appearance != 0)
         {
@@ -844,12 +841,10 @@ bool Transmogrification::ApplyOutfitDraft(Player* player, std::string& result)
 }
 
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost) {
-    if (itemEntry != UINT_MAX && itemEntry != HIDDEN_ITEM_ID && !CharacterCanUseAppearance(player, itemEntry))
+    if (itemEntry == UINT_MAX || itemEntry == HIDDEN_ITEM_ID)
+        return LANG_ERR_TRANSMOG_INVALID_SRC_ENTRY;
+    if (!CharacterCanUseAppearance(player, itemEntry))
         return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
-    if (itemEntry == UINT_MAX || itemEntry == HIDDEN_ITEM_ID) // Hidden transmog
-    {
-        return Transmogrify(player, nullptr, slot, no_cost, true);
-    }
     std::unique_ptr<Item> itemTransmogrifier(Item::CreateItem(itemEntry, 1, 0));
     if (!itemTransmogrifier)
         return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
@@ -1644,8 +1639,8 @@ void Transmogrification::LoadConfig(bool reload)
     IgnoreReqStats = sConfigMgr->GetOption<bool>("Transmogrification.IgnoreReqStats", false);
     UseCollectionSystem = sConfigMgr->GetOption<bool>("Transmogrification.UseCollectionSystem", true);
     UseVendorInterface = sConfigMgr->GetOption<bool>("Transmogrification.UseVendorInterface", false);
-    AllowHiddenTransmog = sConfigMgr->GetOption<bool>("Transmogrification.AllowHiddenTransmog", true);
-    HiddenTransmogIsFree = sConfigMgr->GetOption<bool>("Transmogrification.HiddenTransmogIsFree", true);
+    AllowHiddenTransmog = false; // RTG intentionally disallows creating hidden equipment appearances.
+    HiddenTransmogIsFree = false; // Retained only for safe legacy-row handling; new hidden appearances are impossible.
     TrackUnusableItems = sConfigMgr->GetOption<bool>("Transmogrification.TrackUnusableItems", true);
     RetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.RetroActiveAppearances", true);
     ResetRetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.ResetRetroActiveAppearancesFlag", false);

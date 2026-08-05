@@ -21,7 +21,6 @@
 #define PRESETS // comment this line to disable preset feature totally
 #define HIDDEN_ITEM_ID 1 // used for hidden transmog - do not use a valid equipment ID
 #define MAX_OPTIONS 25 // do not alter
-#define MAX_SEARCH_STRING_LENGTH 50
 
 class Item;
 class Player;
@@ -127,7 +126,6 @@ public:
     typedef std::unordered_map<ObjectGuid, uint32> transmog2Data;
     typedef std::unordered_map<ObjectGuid, transmog2Data> transmogMap;
     typedef std::unordered_map<uint32, std::unordered_set<uint32>> collectionCacheMap;
-    typedef std::unordered_map<uint32, std::string> searchStringMap;
     typedef std::unordered_map<uint32, std::vector<uint32>> transmogPlusData;
     typedef std::unordered_map<ObjectGuid, uint8> selectedSlotMap;
     
@@ -142,7 +140,7 @@ public:
         uint8 slot = 0;
         uint32 targetGuid = 0;
         uint32 targetEntry = 0;
-        uint32 appearanceEntry = 0; // 0 removes an applied appearance; HIDDEN_ITEM_ID hides the slot.
+        uint32 appearanceEntry = 0; // 0 restores original; HIDDEN_ITEM_ID is accepted only as legacy data and is rejected for new drafts.
     };
 
     struct OutfitCostSummary
@@ -169,7 +167,6 @@ public:
     typedef std::map<uint8, std::string> presetIdMap;
     typedef std::unordered_map<ObjectGuid, presetIdMap> presetNameMap;
     presetNameMap presetByName; // presetByName[pGUID][presetID] = presetName
-    searchStringMap searchStringByPlayer;
 
     void PresetTransmog(Player* player, Item* itemTransmogrified, uint32 fakeEntry, uint8 slot);
 

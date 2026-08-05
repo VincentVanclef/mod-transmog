@@ -1,9 +1,10 @@
 -- RTG Transmog complete CHARACTERS database base.
 -- Forward migrations remain in data/sql/updates/char for existing installations.
+-- Hidden equipment appearances are not part of the RTG player-facing contract.
 
 CREATE TABLE IF NOT EXISTS `custom_transmogrification` (
   `GUID` int unsigned NOT NULL COMMENT 'Item guidLow',
-  `FakeEntry` int unsigned NOT NULL COMMENT 'Applied appearance item entry',
+  `FakeEntry` int unsigned NOT NULL COMMENT 'Applied appearance item entry; hidden sentinel 1 is unsupported on RTG',
   `Owner` int unsigned NOT NULL COMMENT 'Character guidLow',
   PRIMARY KEY (`GUID`),
   KEY `idx_owner` (`Owner`)

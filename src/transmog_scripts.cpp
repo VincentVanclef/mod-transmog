@@ -97,6 +97,22 @@ static std::string GetRtgTransmogActionMarker(std::string const& action, uint32 
         + std::to_string(slot) + ":" + std::to_string(value) + "]|r";
 }
 
+struct TransmogBrowseStats
+{
+    uint32 sourceEntries = 0;
+    uint32 compatibleEntries = 0;
+    uint32 uniqueAppearances = 0;
+};
+
+static std::string GetRtgTransmogPageMarker(uint8 slot, TransmogBrowseStats const& stats, uint32 page, uint32 pages)
+{
+    return " |cff010101[RTGTMOGPAGE:" + std::to_string(uint32(slot + 1)) + ":"
+        + std::to_string(stats.sourceEntries) + ":"
+        + std::to_string(stats.compatibleEntries) + ":"
+        + std::to_string(stats.uniqueAppearances) + ":"
+        + std::to_string(page) + ":" + std::to_string(pages) + "]|r";
+}
+
 static std::string GetRtgTransmogSlotStateMarker(Player* player, uint8 slot)
 {
     if (!player)
@@ -317,66 +333,6 @@ const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_INSERTSETNAM
     {LOCALE_ruRU, "Введите имя комплекта"}
 };
 
-const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_SEARCH = {
-    {LOCALE_enUS, "Search..."},
-    {LOCALE_koKR, "검색..."},
-    {LOCALE_frFR, "Rechercher..."},
-    {LOCALE_deDE, "Suche..."},
-    {LOCALE_zhCN, "搜索..."},
-    {LOCALE_zhTW, "搜索..."},
-    {LOCALE_esES, "Buscar..."},
-    {LOCALE_esMX, "Buscar..."},
-    {LOCALE_ruRU, "Поиск..."}
-};
-
-const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_SEARCHING_FOR = {
-    {LOCALE_enUS, "Searching for: "},
-    {LOCALE_koKR, "검색 중: "},
-    {LOCALE_frFR, "Recherche en cours: "},
-    {LOCALE_deDE, "Suche nach: "},
-    {LOCALE_zhCN, "正在搜索： "},
-    {LOCALE_zhTW, "正在搜尋："},
-    {LOCALE_esES, "Buscando:" },
-    {LOCALE_esMX, "Buscando: "},
-    {LOCALE_ruRU, "Поиск: "}
-};
-
-const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_SEARCH_FOR_ITEM = {
-    {LOCALE_enUS, "Search for what item?"},
-    {LOCALE_koKR, "어떤 아이템을 찾으시겠습니까?"},
-    {LOCALE_frFR, "Rechercher quel objet ?"},
-    {LOCALE_deDE, "Nach welchem Gegenstand suchen?"},
-    {LOCALE_zhCN, "搜索哪个物品？"},
-    {LOCALE_zhTW, "搜索哪個物品？"},
-    {LOCALE_esES, "¿Buscar un objeto?"},
-    {LOCALE_esMX, "¿Buscar un objeto?"},
-    {LOCALE_ruRU, "Поиск предмета:"}
-};
-
-const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_CONFIRM_HIDE_ITEM = {
-    {LOCALE_enUS, "You are hiding the item in this slot.\nDo you wish to continue?\n\n"},
-    {LOCALE_koKR, "이 슬롯에 아이템을 감추고 있습니다.\n계속하시겠습니까?\n\n"},
-    {LOCALE_frFR, "Vous masquez l'objet dans cet emplacement.\nVoulez-vous continuer ?\n\n"},
-    {LOCALE_deDE, "Du versteckst das Item in diesem Slot.\nMöchtest du fortfahren?\n\n"},
-    {LOCALE_zhCN, "您正在隐藏此槽中的物品。\n您是否要继续？\n\n"},
-    {LOCALE_zhTW, "您正在隱藏此槽中的物品。\n您是否希望繼續？\n\n"},
-    {LOCALE_esES, "Estás ocultando el objeto en esta ranura.\n¿Deseas continuar?\n\n"},
-    {LOCALE_esMX, "Estás ocultando el objeto en esta ranura.\n¿Deseas continuar?\n\n"},
-    {LOCALE_ruRU, "Вы скрываете предмет в этом слоте.\nЖелаете продолжить?\n\n"}
-};
-
-const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_HIDESLOT = {
-    {LOCALE_enUS, "Hide Slot"},
-    {LOCALE_koKR, "슬롯 숨기기"},
-    {LOCALE_frFR, "Cacher l'emplacement"},
-    {LOCALE_deDE, "Slot verbergen"},
-    {LOCALE_zhCN, "隐藏槽位"},
-    {LOCALE_zhTW, "隱藏槽位"},
-    {LOCALE_esES, "Ocultar ranura"},
-    {LOCALE_esMX, "Ocultar ranura"},
-    {LOCALE_ruRU, "Скрыть слот"}
-};
-
 const std::unordered_map<LocaleConstant, std::string> TRANSMOG_TEXT_REMOVETRANSMOG_SLOT = {
     {LOCALE_enUS, "Remove transmogrification from the slot?"},
     {LOCALE_koKR, "해당 슬롯의 형상변환을 제거합니까?"},
@@ -452,11 +408,6 @@ std::unordered_map<std::string, const std::unordered_map<LocaleConstant, std::st
     {"delete_set", &TRANSMOG_TEXT_DELETESET},
     {"confirm_delete_set", &TRANSMOG_TEXT_CONFIRM_DELETESET},
     {"insert_set_name", &TRANSMOG_TEXT_INSERTSETNAME},
-    {"search", &TRANSMOG_TEXT_SEARCH},
-    {"searching_for", &TRANSMOG_TEXT_SEARCHING_FOR},
-    {"search_for_item", &TRANSMOG_TEXT_SEARCH_FOR_ITEM},
-    {"confirm_hide_item", &TRANSMOG_TEXT_CONFIRM_HIDE_ITEM},
-    {"hide_slot", &TRANSMOG_TEXT_HIDESLOT},
     {"remove_transmog_slot", &TRANSMOG_TEXT_REMOVETRANSMOG_SLOT},
     {"confirm_use_item", &TRANSMOG_TEXT_CONFIRM_USEITEM},
     {"previous_page", &TRANSMOG_TEXT_PREVIOUS_PAGE},
@@ -532,19 +483,12 @@ int32 GetTransmogSetPrice(uint64 baseCopper)
 }
 #endif
 
-bool ValidForTransmog (Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate, bool hasSearch, std::string const& searchTerm)
+bool ValidForTransmog(Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate)
 {
     if (!player || !targetTemplate || !sourceTemplate)
         return false;
 
     if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
-        return false;
-
-    // Keep the currently-applied appearance in the browser. This makes it clear that
-    // an already-transmogrified slot can still be opened and replaced directly.
-    // PerformTransmogrification() treats selecting the current appearance as a no-op,
-    // so the player is never charged for simply clicking it again.
-    if (hasSearch && sourceTemplate->Name1.find(searchTerm) == std::string::npos)
         return false;
 
     return true;
@@ -561,7 +505,7 @@ bool CmpTmog (ItemTemplate const* first, ItemTemplate const* second)
         < std::tie(secondQuality, second->Name1, second->ItemId);
 }
 
-std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target, bool hasSearch, std::string const& searchTerm)
+std::vector<ItemTemplate const*> GetValidTransmogs(Player* player, Item* target, TransmogBrowseStats* stats = nullptr)
 {
     std::vector<ItemTemplate const*> allowedItems;
     if (!player || !target)
@@ -571,25 +515,26 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
     if (!targetTemplate)
         return allowedItems;
 
-    // Collection mode adds permanently unlocked appearances, but a currently
-    // carried item must also be usable immediately. Merge both sources and
-    // deduplicate by entry. Work directly with immutable item templates: the
-    // previous collection path allocated ownerless Item objects that were never
-    // destroyed merely to access their templates.
-    std::unordered_set<uint32> addedEntries;
-    auto addValidSource = [&](ItemTemplate const* sourceTemplate)
+    // Merge Character Appearance Memory with every item currently equipped or
+    // carried. The collection remains the durable source, while live inventory
+    // is an immediate fallback so a newly looted item can be previewed before an
+    // asynchronous discovery write has completed.
+    std::unordered_set<uint32> seenEntries;
+    auto addSource = [&](ItemTemplate const* sourceTemplate)
     {
         if (!sourceTemplate)
             return;
 
         uint32 const entry = sourceTemplate->ItemId;
-        if (addedEntries.find(entry) != addedEntries.end())
+        if (!seenEntries.insert(entry).second)
             return;
 
-        if (!ValidForTransmog(player, targetTemplate, sourceTemplate, hasSearch, searchTerm))
+        if (stats)
+            ++stats->sourceEntries;
+
+        if (!ValidForTransmog(player, targetTemplate, sourceTemplate))
             return;
 
-        addedEntries.insert(entry);
         allowedItems.push_back(sourceTemplate);
     };
 
@@ -599,15 +544,16 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
         auto const collectionItr = sT->collectionCache.find(ownerGuid);
         if (collectionItr != sT->collectionCache.end())
             for (uint32 itemId : collectionItr->second)
-                addValidSource(sObjectMgr->GetItemTemplate(itemId));
+                addSource(sObjectMgr->GetItemTemplate(itemId));
     }
 
-    // Always merge the player's live backpack and equipped bags. This preserves
-    // immediate use of newly obtained BoE cloaks and other sources even before
-    // they have been written to the collection cache.
+    for (uint8 slot = EQUIPMENT_SLOT_START; slot < EQUIPMENT_SLOT_END; ++slot)
+        if (Item* sourceItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+            addSource(sourceItem->GetTemplate());
+
     for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
         if (Item* sourceItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-            addValidSource(sourceItem->GetTemplate());
+            addSource(sourceItem->GetTemplate());
 
     for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
     {
@@ -617,21 +563,27 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
 
         for (uint32 j = 0; j < bag->GetBagSize(); ++j)
             if (Item* sourceItem = player->GetItemByPos(i, j))
-                addValidSource(sourceItem->GetTemplate());
+                addSource(sourceItem->GetTemplate());
     }
+
+    if (stats)
+        stats->compatibleEntries = uint32(allowedItems.size());
 
     if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true))
         std::sort(allowedItems.begin(), allowedItems.end(), CmpTmog);
 
-    // The Trophy Collection preserves every earned item, while the appearance
-    // picker presents one representative for each visual model. This keeps
-    // character history complete without flooding dropdowns with identical art.
+    // Show one representative per model. The Trophy Collection still retains
+    // every earned item, but the picker stays concise and avoids duplicate art.
     std::unordered_set<uint32> addedDisplays;
     allowedItems.erase(std::remove_if(allowedItems.begin(), allowedItems.end(), [&](ItemTemplate const* item)
     {
-        if (!item) return true;
+        if (!item)
+            return true;
         return !addedDisplays.insert(item->DisplayInfoID).second;
     }), allowedItems.end());
+
+    if (stats)
+        stats->uniqueAppearances = uint32(allowedItems.size());
 
     return allowedItems;
 }
@@ -671,7 +623,7 @@ static std::string FormatSavedOutfitAppearance(Player* player, uint8 slot, uint3
     if (entry == 0)
         appearance = "Original appearance";
     else if (entry == HIDDEN_ITEM_ID)
-        appearance = "Hidden slot";
+        appearance = "Unavailable legacy hidden appearance";
     else
         appearance = sT->GetItemIcon(entry, 30, 30, -18, 0) + sT->GetItemLink(entry, player->GetSession());
 
@@ -696,7 +648,7 @@ static bool SavedOutfitEntryIsAvailable(Player* player, uint8 slot, uint32 entry
     if (entry == 0)
         return true;
     if (entry == HIDDEN_ITEM_ID)
-        return sT->GetAllowHiddenTransmog();
+        return false;
     ItemTemplate const* source = sObjectMgr->GetItemTemplate(entry);
     return source && sT->CharacterCanUseAppearance(player, entry)
         && sT->CanTransmogrifyItemWithItem(player, target->GetTemplate(), source);
@@ -774,7 +726,7 @@ static void ShowOutfitReview(Player* player, Creature* creature)
         if (staged.appearanceEntry == 0)
             appearance = "Restore original appearance";
         else if (staged.appearanceEntry == HIDDEN_ITEM_ID)
-            appearance = "Hide this slot";
+            appearance = "Unavailable legacy hidden appearance";
         else
             appearance = sT->GetItemIcon(staged.appearanceEntry, 26, 26, -16, 0) + sT->GetItemLink(staged.appearanceEntry, session);
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
@@ -908,6 +860,12 @@ bool PerformTransmogrification(Player* player, uint32 itemEntry, uint32 /*cost*/
     uint8 slot = sT->selectionCache[player->GetGUID()];
     WorldSession* session = player->GetSession();
 
+    if (itemEntry == UINT_MAX || itemEntry == HIDDEN_ITEM_ID)
+    {
+        ChatHandler(session).SendSysMessage("Hidden equipment appearances are disabled on RTG.");
+        return false;
+    }
+
     Item* targetItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
     if (!targetItem)
     {
@@ -1004,9 +962,6 @@ public:
         }
 
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
-
-        // Clear the search string for the player
-        sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
 
         // Scoreboard-opened transmog has no creature context, so give players a direct return path.
         if (!creature)
@@ -1124,9 +1079,6 @@ public:
             "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|t" + GetLocaleText(locale, "remove_transmog")
                 + GetRtgTransmogActionMarker("remove_all"),
             EQUIPMENT_SLOT_END + 2, 0, GetLocaleText(locale, "remove_transmog_ask"), 0, false);
-        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-            "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu")
-                + GetRtgTransmogActionMarker("refresh_root"), EQUIPMENT_SLOT_END + 1, 0);
         SendGossipMenuFor(player, DEFAULT_GOSSIP_MESSAGE, GetTransmogMenuGuid(player, creature));
         return true;
     }
@@ -1544,17 +1496,11 @@ public:
     {
         player->PlayerTalkClass->ClearMenus();
         sender = DecodeTransmogCodeSender(sender);
+        // Text input is reserved for naming Saved Outfits. Appearance filtering
+        // now lives inside the RTG drawer and never opens Blizzard's hidden
+        // gossip input popup.
         if (sender)
-        {
-            // "sender" is an equipment slot for a search - execute the search
-            std::string searchString(code);
-            if (searchString.length() > MAX_SEARCH_STRING_LENGTH)
-                searchString = searchString.substr(0, MAX_SEARCH_STRING_LENGTH);
-            sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
-            sT->searchStringByPlayer.insert({player->GetGUID().GetCounter(), searchString});
-            OnGossipSelect(player, creature, EQUIPMENT_SLOT_END, sender - 1);
             return true;
-        }
         if (action)
             return true; // should never happen
         if (!sT->GetEnableSets())
@@ -1605,182 +1551,98 @@ public:
     }
 #endif
 
-    void ShowTransmogItemsInGossipMenu(Player* player, Creature* creature, uint8 slot, uint16 gossipPageNumber) // Only checks bags while can use an item from anywhere in inventory
+    void ShowTransmogItemsInGossipMenu(Player* player, Creature* creature, uint8 slot, uint16 gossipPageNumber)
     {
         WorldSession* session = player->GetSession();
         LocaleConstant locale = session->GetSessionDbLocaleIndex();
         Item* oldItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        bool hasSearchString = false;
 
         uint16 pageNumber = 0;
-        uint32 startValue = 0;
-        // Keep enough native rows for search/hide, pagination, slot refresh,
-        // outfit apply/clear, and the return row on every page.
-        uint32 const pageItemCapacity = MAX_OPTIONS > 9 ? MAX_OPTIONS - 9 : 1;
-        uint32 endValue = pageItemCapacity - 1;
-        bool lastPage = true;
+        // Search, Hide, and manual Refresh are intentionally absent. Reserve
+        // native rows only for paging, per-slot clear/original, outfit actions,
+        // and the return marker. This lets most RTG collections fit on one page.
+        uint32 const pageItemCapacity = MAX_OPTIONS > 8 ? MAX_OPTIONS - 8 : 1;
         if (gossipPageNumber > EQUIPMENT_SLOT_END + 10)
-        {
             pageNumber = gossipPageNumber - EQUIPMENT_SLOT_END - 10;
-            startValue = pageNumber * pageItemCapacity;
-            endValue = (pageNumber + 1) * pageItemCapacity - 1;
-        }
 
+        TransmogBrowseStats browseStats;
+        uint32 totalPages = 1;
         if (oldItem)
         {
             uint32 existingTransmog = sT->GetFakeEntry(oldItem->GetGUID());
             uint32 price = GetTransmogPrice(oldItem->GetTemplate());
             bool freeTransmogReady = sT->HasFreeTransmogReady(player);
-            std::unordered_map<uint32, std::string>::iterator searchStringIterator = sT->searchStringByPlayer.find(player->GetGUID().GetCounter());
-            hasSearchString = !(searchStringIterator == sT->searchStringByPlayer.end());
-            std::string searchDisplayValue(hasSearchString ? searchStringIterator->second : GetLocaleText(locale, "search"));
-            std::vector<ItemTemplate const*> allowedItems = GetValidTransmogs(player, oldItem, hasSearchString, searchDisplayValue);
+            std::vector<ItemTemplate const*> allowedItems = GetValidTransmogs(player, oldItem, &browseStats);
+            totalPages = std::max<uint32>(1, uint32((allowedItems.size() + pageItemCapacity - 1) / pageItemCapacity));
+            pageNumber = uint16(std::min<uint32>(pageNumber, totalPages - 1));
+            uint32 const startValue = uint32(pageNumber) * pageItemCapacity;
+            uint32 const endValue = std::min<uint32>(uint32(allowedItems.size()), startValue + pageItemCapacity);
 
-            if (allowedItems.size() > 0)
+            for (uint32 i = startValue; i < endValue; ++i)
             {
-                lastPage = false;
-                // Offset values to add Search gossip item
-                if (pageNumber == 0)
+                ItemTemplate const* newItem = allowedItems[i];
+                if (!newItem)
+                    continue;
+
+                uint8 paymentType = sT->GetPaymentType();
+                uint32 const vpCost = paymentType == 0 ? 0u : GetTransmogVotePointPrice(price);
+                std::string lineText = sT->GetItemIcon(newItem->ItemId, 30, 30, -18, 0) + sT->GetItemLink(newItem->ItemId, session);
+                bool const isCurrentAppearance = existingTransmog == newItem->ItemId;
+                if (isCurrentAppearance)
+                    lineText += "  |cff00ff00(Currently Applied)|r";
+
+                auto vpText = [&](uint32 vp) -> std::string
                 {
-                    if (hasSearchString)
-                    {
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "searching_for") + searchDisplayValue
-                            + GetRtgTransmogActionMarker("search", uint32(slot + 1)), EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
-                    }
-                    else
-                    {
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, sT->GetItemIcon(30620, 30, 30, -18, 0) + GetLocaleText(locale, "search")
-                            + GetRtgTransmogActionMarker("search", uint32(slot + 1)), EncodeTransmogCodeSender(slot + 1), 0, GetLocaleText(locale, "search_for_item"), 0, true);
-                    }
-                }
-                else
-                {
-                    startValue--;
-                }
-                if (sT->GetAllowHiddenTransmog() && existingTransmog != HIDDEN_ITEM_ID)
-                {
-                    // Offset the start and end values to make space for invisible item entry.
-                    // Hiding can replace an existing visible transmog without removing it first.
-                    endValue--;
-                    if (pageNumber != 0)
-                    {
-                        startValue--;
-                    }
-                    else
-                    {
-                        // Add invisible item entry
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                            "|TInterface/ICONS/inv_misc_enggizmos_27:30:30:-18:0|tPreview Hidden Slot"
-                                + GetRtgTransmogActionMarker("hide", uint32(slot + 1)),
-                            slot, UINT_MAX);
-                    }
-                }
-                for (uint32 i = startValue; i <= endValue; i++)
-                {
-                    if (allowedItems.empty() || i > allowedItems.size() - 1)
-                    {
-                        lastPage = true;
-                        break;
-                    }
-                    ItemTemplate const* newItem = allowedItems.at(i);
-                    {
-                        uint8 paymentType = sT->GetPaymentType(); // 0=Gold, 1=VP, 2=Gold+VP
+                    std::ostringstream os;
+                    os << "|cff00ff00" << vp << " VP|r";
+                    return os.str();
+                };
 
-                        uint32 const vpCost = paymentType == 0 ? 0u : GetTransmogVotePointPrice(price);
+                bool const paidTransmog = sT->GetRequireToken() || price > 0;
+                if (!isCurrentAppearance && freeTransmogReady && paidTransmog)
+                    lineText += "  -  |cff00ff00FREE READY|r";
+                else if (!isCurrentAppearance && paymentType == 1 && vpCost > 0)
+                    lineText += "  -  Cost: " + vpText(vpCost);
+                else if (!isCurrentAppearance && paymentType == 2 && vpCost > 0)
+                    lineText += "  +  " + vpText(vpCost);
 
-                        std::string lineText = sT->GetItemIcon(newItem->ItemId, 30, 30, -18, 0) + sT->GetItemLink(newItem->ItemId, session);
-
-                        bool isCurrentAppearance = existingTransmog == newItem->ItemId;
-                        if (isCurrentAppearance)
-                        {
-                            lineText += "  |cff00ff00(Currently Applied)|r";
-                        }
-
-                        // Colored VP text
-                        auto vpText = [&](uint32 vp) -> std::string
-                        {
-                            std::ostringstream os;
-                            os << "|cff00ff00" << vp << " VP|r";
-                            return os.str();
-                        };
-
-                        bool paidTransmog = sT->GetRequireToken() || price > 0;
-
-                        if (!isCurrentAppearance && freeTransmogReady && paidTransmog)
-                        {
-                            lineText += "  -  |cff00ff00FREE READY|r";
-                        }
-                        else if (!isCurrentAppearance && paymentType == 1)
-                        {
-                            // VP-only: display VP in the appearance row.
-                            if (vpCost > 0)
-                            {
-                                lineText += "  -  Cost: " + vpText(vpCost);
-                            }
-                        }
-                        else if (!isCurrentAppearance && paymentType == 2)
-                        {
-                            // Gold + VP: append the VP component; the complete outfit footer owns the combined price
-                            if (vpCost > 0)
-                            {
-                                lineText += "  +  " + vpText(vpCost);
-                            }
-                        }
-
-                        AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                            lineText + "  |cffffcc00— Preview|r"
-                                + GetRtgTransmogActionMarker("stage", uint32(slot + 1), newItem->ItemId),
-                            slot, newItem->ItemId);
-                    }
-                }
+                AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
+                    lineText + "  |cffffcc00— Preview|r"
+                        + GetRtgTransmogActionMarker("stage", uint32(slot + 1), newItem->ItemId),
+                    slot, newItem->ItemId);
             }
-            if (gossipPageNumber == EQUIPMENT_SLOT_END + 11)
+
+            if (pageNumber > 0)
             {
+                uint32 const previousSender = pageNumber == 1
+                    ? EQUIPMENT_SLOT_END
+                    : EQUIPMENT_SLOT_END + 10 + pageNumber - 1;
                 AddGossipItemFor(player, GOSSIP_ICON_CHAT,
-                    GetLocaleText(locale, "previous_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), 0),
-                    EQUIPMENT_SLOT_END, slot);
-                if (!lastPage)
-                {
-                    AddGossipItemFor(player, GOSSIP_ICON_CHAT,
-                        GetLocaleText(locale, "next_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), gossipPageNumber + 1),
-                        gossipPageNumber + 1, slot);
-                }
+                    GetLocaleText(locale, "previous_page")
+                        + GetRtgTransmogActionMarker("page", uint32(slot + 1), pageNumber),
+                    previousSender, slot);
             }
-            else if (gossipPageNumber > EQUIPMENT_SLOT_END + 11)
+            if (pageNumber + 1 < totalPages)
             {
+                uint32 const nextSender = EQUIPMENT_SLOT_END + 11 + pageNumber;
                 AddGossipItemFor(player, GOSSIP_ICON_CHAT,
-                    GetLocaleText(locale, "previous_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), gossipPageNumber - 1),
-                    gossipPageNumber - 1, slot);
-                if (!lastPage)
-                {
-                    AddGossipItemFor(player, GOSSIP_ICON_CHAT,
-                        GetLocaleText(locale, "next_page") + GetRtgTransmogActionMarker("page", uint32(slot + 1), gossipPageNumber + 1),
-                        gossipPageNumber + 1, slot);
-                }
-            }
-            else if (!lastPage)
-            {
-                AddGossipItemFor(player, GOSSIP_ICON_CHAT,
-                    "Next Page" + GetRtgTransmogActionMarker("page", uint32(slot + 1), EQUIPMENT_SLOT_END + 11),
-                    EQUIPMENT_SLOT_END + 11, slot);
+                    GetLocaleText(locale, "next_page")
+                        + GetRtgTransmogActionMarker("page", uint32(slot + 1), pageNumber + 2),
+                    nextSender, slot);
             }
 
             if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
                 if (draft->find(slot) != draft->end())
                     AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                        "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|tNo Change — Revert Staged Preview"
+                        "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|tClear Slot Preview"
                             + GetRtgTransmogActionMarker("revert", uint32(slot + 1)),
                         TRANSMOG_OUTFIT_REVERT_SLOT_SENDER, slot);
 
             if (existingTransmog)
                 AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                    "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|tPreview Original Appearance"
+                    "|TInterface/ICONS/INV_Enchant_Disenchant:30:30:-18:0|tUse Original Appearance"
                         + GetRtgTransmogActionMarker("original", uint32(slot + 1)),
                     EQUIPMENT_SLOT_END + 3, slot);
-            AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG,
-                "|TInterface/PaperDollInfoFrame/UI-GearManager-Undo:30:30:-18:0|t" + GetLocaleText(locale, "update_menu")
-                    + GetRtgTransmogActionMarker("refresh", uint32(slot + 1)),
-                EQUIPMENT_SLOT_END, slot);
         }
         else
         {
@@ -1789,10 +1651,10 @@ public:
                 : "Equipment Slot";
             std::string emptyText = sT->GetSlotIcon(slot, 30, 30, -18, 0)
                 + "|cffffcc00" + slotName + " is empty.|r\n"
-                + "|cffb8aa92Equip an item in this slot before applying an appearance. "
-                  "The slot remains visible in RTG Transmog and will refresh when an item is equipped.|r";
+                + "|cffb8aa92Equip an item in this slot before applying an appearance.|r";
             AddGossipItemFor(player, GOSSIP_ICON_CHAT, emptyText, EQUIPMENT_SLOT_END + 1, 0);
         }
+
         if (Transmogrification::outfitDraft const* draft = sT->GetOutfitDraft(player))
         {
             std::string outfitError;
@@ -1829,16 +1691,11 @@ public:
         }
 
         std::string backText = "|TInterface/ICONS/Ability_Spy:30:30:-18:0|t" + GetLocaleText(locale, "back");
-        // Player-owned portable pages are asynchronous. RTG_Core reads this raw
-        // slot marker to reject stale/mismatched responses, then strips it from
-        // every visible label and dropdown row. Keep it on the return row so an
-        // otherwise empty slot page can still be matched safely.
         if (!creature)
         {
             backText += " |cff010101[RTGTSLOT:" + std::to_string(uint32(slot + 1)) + "]|r";
-            // Refresh the current slot's visual and quality after apply/remove
-            // without forcing the player back through the root paper-doll page.
             backText += GetRtgTransmogSlotStateMarker(player, slot);
+            backText += GetRtgTransmogPageMarker(slot, browseStats, uint32(pageNumber + 1), totalPages);
         }
         backText += GetRtgTransmogActionMarker("back", uint32(slot + 1));
         AddGossipItemFor(player, GOSSIP_ICON_MONEY_BAG, backText, EQUIPMENT_SLOT_END + 1, 0);
@@ -1849,19 +1706,6 @@ public:
     {
         std::vector<ItemTemplate const*> spoofedItems;
         uint32 existingTransmog = sT->GetFakeEntry(target->GetGUID());
-        // Hidden appearance can replace a visible transmog directly. Only suppress the
-        // button when the slot is already hidden.
-        if (sT->AllowHiddenTransmog && existingTransmog != HIDDEN_ITEM_ID)
-        {
-            ItemTemplate const* _hideSlotButton = sObjectMgr->GetItemTemplate(CUSTOM_HIDE_ITEM_VENDOR_ID);
-            if (_hideSlotButton)
-                spoofedItems.push_back(_hideSlotButton);
-            else
-            {
-                _hideSlotButton = sObjectMgr->GetItemTemplate(FALLBACK_HIDE_ITEM_VENDOR_ID);
-                spoofedItems.push_back(_hideSlotButton);
-            }
-        }
         if (existingTransmog)
         {
             ItemTemplate const* _removeTransmogButton = sObjectMgr->GetItemTemplate(CUSTOM_REMOVE_TMOG_VENDOR_ID);
@@ -1918,7 +1762,7 @@ public:
         }
         ItemTemplate const* targetTemplate = targetItem->GetTemplate();
 
-        std::vector<ItemTemplate const*> itemList = GetValidTransmogs(player, targetItem, false, "");
+        std::vector<ItemTemplate const*> itemList = GetValidTransmogs(player, targetItem);
         std::vector<ItemTemplate const*> spoofedItems = GetSpoofedVendorItems(targetItem);
 
         uint32 itemCount = itemList.size();
@@ -2163,7 +2007,7 @@ public:
 
         if (itemEntry == CUSTOM_HIDE_ITEM_VENDOR_ID || itemEntry == FALLBACK_HIDE_ITEM_VENDOR_ID)
         {
-            PerformTransmogrification(player, UINT_MAX, 0);
+            ChatHandler(player->GetSession()).SendSysMessage("Hidden equipment appearances are disabled on RTG.");
         }
         else if (itemEntry == CUSTOM_REMOVE_TMOG_VENDOR_ID || itemEntry == FALLBACK_REMOVE_TMOG_VENDOR_ID)
         {
@@ -2315,10 +2159,6 @@ public:
             return;
         }
 
-        // A direct slot request is a fresh browse operation. Never inherit the
-        // previous slot's search string or cached inventory filter.
-        sT->searchStringByPlayer.erase(player->GetGUID().GetCounter());
-
         npc_transmogrifier script;
         script.OnGossipSelect(player, nullptr, EQUIPMENT_SLOT_END, equipmentSlot);
     }
@@ -2378,7 +2218,7 @@ namespace RTG::Services::Transmog
         CloseGossipMenuFor(player);
 
         // The PlayerGossip service owns sender registration for all subsequent
-        // appearance, paging, remove, hide, and Back actions. Opening the slot
+        // appearance, paging, original, clear-preview, and Back actions. Opening the slot
         // through a dedicated service sender avoids replaying a stale root menu.
         sPlayerGossipMgr->ShowGossipMenu(
             player, 91013, PlayerGossip_TransmogService::DIRECT_SLOT, inventorySlot);
