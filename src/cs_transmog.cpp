@@ -30,13 +30,6 @@ namespace RTG::Services::Transmog
 {
     bool Open(Player* player);
     bool OpenSlot(Player* player, uint8 inventorySlot);
-    bool OpenSlot(Player* player, uint8 inventorySlot, uint32 requestToken);
-    bool Stage(Player* player, uint8 inventorySlot, uint32 appearanceEntry, uint32 requestToken);
-    bool Original(Player* player, uint8 inventorySlot, uint32 requestToken);
-    bool Revert(Player* player, uint8 inventorySlot, uint32 requestToken);
-    bool Page(Player* player, uint8 inventorySlot, uint32 page, uint32 requestToken);
-    bool Clear(Player* player, uint32 requestToken);
-    bool Apply(Player* player, uint32 requestToken);
 }
 
 class transmog_commandscript : public CommandScript
@@ -66,14 +59,8 @@ public:
 
         static ChatCommandTable commandTable =
         {
-            { "rtgtransmogslot",     HandleTransmogSlotCommand,     SEC_PLAYER, Console::No },
-            { "rtgtransmogstage",    HandleTransmogStageCommand,    SEC_PLAYER, Console::No },
-            { "rtgtransmogoriginal", HandleTransmogOriginalCommand, SEC_PLAYER, Console::No },
-            { "rtgtransmogrevert",   HandleTransmogRevertCommand,   SEC_PLAYER, Console::No },
-            { "rtgtransmogpage",     HandleTransmogPageCommand,     SEC_PLAYER, Console::No },
-            { "rtgtransmogclear",    HandleTransmogClearCommand,    SEC_PLAYER, Console::No },
-            { "rtgtransmogapply",    HandleTransmogApplyCommand,    SEC_PLAYER, Console::No },
-            { "transmog",            transmogTable },
+            { "rtgtransmogslot", HandleTransmogSlotCommand, SEC_PLAYER, Console::No },
+            { "transmog",        transmogTable },
         };
 
         return commandTable;
@@ -187,7 +174,7 @@ public:
             if (isNotConsole && target != handler->GetPlayer())
                 handler->PSendSysMessage(R"(|c{}|Hitem:{}:0:0:0:0:0:0:0:0|h[{}]|h|r has been added to the appearance collection of Player {}.)", itemQuality.c_str(), itemId, itemName.c_str(), nameLink);
 
-            CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id, discovered_at, first_discovered_at, last_discovered_at, discovery_source, legacy_discovery) VALUES ({}, {}, {}, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 'gm', 0) ON DUPLICATE KEY UPDATE account_id={}, last_discovered_at=UNIX_TIMESTAMP(), discovery_source='gm', legacy_discovery=0", accountId, ownerGuid, itemId, accountId);
+            CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
         }
         else
         {
@@ -266,7 +253,7 @@ public:
 
                     if (sTransmogrification->AddCollectedAppearance(ownerGuid, itemId))
                     {
-                        CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id, discovered_at, first_discovered_at, last_discovered_at, discovery_source, legacy_discovery) VALUES ({}, {}, {}, UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), UNIX_TIMESTAMP(), 'gm', 0) ON DUPLICATE KEY UPDATE account_id={}, last_discovered_at=UNIX_TIMESTAMP(), discovery_source='gm', legacy_discovery=0", accountId, ownerGuid, itemId, accountId);
+                        CharacterDatabase.Execute("INSERT INTO custom_unlocked_appearances (account_id, owner_guid, item_template_id) VALUES ({}, {}, {})", accountId, ownerGuid, itemId);
                         added = true;
                     }
                 }
@@ -320,8 +307,7 @@ public:
         return true;
     }
 
-    static bool HandleTransmogSlotCommand(ChatHandler* handler, uint32 inventorySlot,
-        Optional<uint32> requestToken)
+    static bool HandleTransmogSlotCommand(ChatHandler* handler, uint32 inventorySlot)
     {
         Player* player = handler ? handler->GetPlayer() : nullptr;
         if (!player)
@@ -333,66 +319,12 @@ public:
             return true;
         }
 
-        if (!RTG::Services::Transmog::OpenSlot(player, uint8(inventorySlot),
-            requestToken ? *requestToken : 0u))
+        if (!RTG::Services::Transmog::OpenSlot(player, uint8(inventorySlot)))
         {
             handler->SendErrorMessage("That slot is not equipped or cannot be transmogrified.");
             return true;
         }
 
-        return true;
-    }
-
-    static bool HandleTransmogStageCommand(ChatHandler* handler, uint32 inventorySlot,
-        uint32 appearanceEntry, uint32 requestToken)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Stage(
-            player, uint8(inventorySlot), appearanceEntry, requestToken))
-            if (handler) handler->SendErrorMessage("That Transmog appearance request could not be processed.");
-        return true;
-    }
-
-    static bool HandleTransmogOriginalCommand(ChatHandler* handler, uint32 inventorySlot,
-        uint32 requestToken)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Original(player, uint8(inventorySlot), requestToken))
-            if (handler) handler->SendErrorMessage("That original-appearance request could not be processed.");
-        return true;
-    }
-
-    static bool HandleTransmogRevertCommand(ChatHandler* handler, uint32 inventorySlot,
-        uint32 requestToken)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Revert(player, uint8(inventorySlot), requestToken))
-            if (handler) handler->SendErrorMessage("That staged-slot request could not be processed.");
-        return true;
-    }
-
-    static bool HandleTransmogPageCommand(ChatHandler* handler, uint32 inventorySlot,
-        uint32 page, uint32 requestToken)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Page(player, uint8(inventorySlot), page, requestToken))
-            if (handler) handler->SendErrorMessage("That Transmog page request could not be processed.");
-        return true;
-    }
-
-    static bool HandleTransmogClearCommand(ChatHandler* handler, uint32 requestToken)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Clear(player, requestToken))
-            if (handler) handler->SendErrorMessage("The outfit preview could not be cleared.");
-        return true;
-    }
-
-    static bool HandleTransmogApplyCommand(ChatHandler* handler, uint32 requestToken)
-    {
-        Player* player = handler ? handler->GetPlayer() : nullptr;
-        if (!player || !RTG::Services::Transmog::Apply(player, requestToken))
-            if (handler) handler->SendErrorMessage("The complete outfit could not be applied.");
         return true;
     }
 

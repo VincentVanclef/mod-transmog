@@ -10,7 +10,6 @@
 #include <ctime>
 #include <memory>
 #include <limits>
-#include <utility>
 
 Transmogrification* Transmogrification::instance()
 {
@@ -77,12 +76,7 @@ void Transmogrification::LoadPlayerSets(ObjectGuid pGUID)
                     LOG_ERROR("module", "Item entry (FakeEntry: {}, player: {}, slot: {}, presetId: {}) has invalid slot, ignoring.", entry, pGUID.ToString(), slot, PresetID);
                     continue;
                 }
-                if (entry == HIDDEN_ITEM_ID)
-                {
-                    LOG_WARN("module", "Ignoring legacy hidden appearance in saved outfit (player: {}, slot: {}, presetId: {}).", pGUID.ToString(), slot, PresetID);
-                    continue;
-                }
-                if (entry == 0 || sObjectMgr->GetItemTemplate(entry))
+                if (entry == HIDDEN_ITEM_ID || sObjectMgr->GetItemTemplate(entry))
                     presetById[pGUID][PresetID][slot] = entry; // Transmogrification::Preset(presetName, fakeEntry);
             }
 
@@ -476,7 +470,7 @@ void Transmogrification::DeleteFakeEntry(Player* player, uint8 /*slot*/, Item* i
     UpdateItem(player, itemTransmogrified);
 }
 
-void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified, CharacterDatabaseTransaction* trans)
+void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*slot*/, Item* itemTransmogrified)
 {
     ObjectGuid itemGUID = itemTransmogrified->GetGUID();
     ObjectGuid playerGUID = player->GetGUID();
@@ -494,10 +488,7 @@ void Transmogrification::SetFakeEntry(Player* player, uint32 newEntry, uint8 /*s
 
     entryMap[playerGUID][itemGUID] = newEntry;
     dataMap[itemGUID] = playerGUID;
-    if (trans)
-        (*trans)->Append("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
-    else
-        CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
+    CharacterDatabase.Execute("REPLACE INTO custom_transmogrification (GUID, FakeEntry, Owner) VALUES ({}, {}, {})", itemGUID.GetCounter(), newEntry, playerGUID.GetCounter());
     UpdateItem(player, itemTransmogrified);
 }
 
@@ -513,352 +504,11 @@ bool Transmogrification::AddCollectedAppearance(uint32 ownerGuid, uint32 itemId)
     return res.second;
 }
 
-bool Transmogrification::CharacterCanUseAppearance(Player* player, uint32 itemEntry) const
-{
-    if (!player || !itemEntry)
-        return false;
-    if (itemEntry == HIDDEN_ITEM_ID || itemEntry == UINT_MAX)
-        return false;
-
-    uint32 const ownerGuid = player->GetGUID().GetCounter();
-    auto const collectionItr = collectionCache.find(ownerGuid);
-    if (collectionItr != collectionCache.end() && collectionItr->second.contains(itemEntry))
-        return true;
-
-    // Live possession is an immediate, authoritative fallback. This closes the
-    // short window between acquiring an item and the asynchronous Appearance
-    // Memory write/cache hook, and restores the expected inventory browser.
-    if (player->HasItemCount(itemEntry, 1, true))
-        return true;
-
-    return false;
-}
-
-bool Transmogrification::StageOutfitAppearance(Player* player, uint8 slot, uint32 appearanceEntry, std::string& error)
-{
-    error.clear();
-    if (!player || slot >= EQUIPMENT_SLOT_END)
-    {
-        error = "That outfit slot is invalid.";
-        return false;
-    }
-
-    Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-    if (!target)
-    {
-        error = "Equip an item in that slot before previewing an appearance.";
-        return false;
-    }
-
-    uint32 normalized = appearanceEntry == UINT_MAX ? HIDDEN_ITEM_ID : appearanceEntry;
-    if (normalized == HIDDEN_ITEM_ID)
-    {
-        error = "Hidden equipment appearances are disabled on RTG.";
-        return false;
-    }
-    else if (normalized != 0)
-    {
-        if (!CharacterCanUseAppearance(player, normalized))
-        {
-            error = "That appearance has not been discovered by this character.";
-            return false;
-        }
-
-        ItemTemplate const* source = sObjectMgr->GetItemTemplate(normalized);
-        bool const carriedSource = player->HasItemCount(normalized, 1, false);
-        if (!source || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source, carriedSource))
-        {
-            error = "That appearance is not compatible with the equipped item.";
-            return false;
-        }
-    }
-
-    uint32 const current = GetFakeEntry(target->GetGUID());
-    uint32 const ownerGuid = player->GetGUID().GetCounter();
-    if (current == normalized)
-    {
-        if (auto ownerItr = outfitDraftByGuid.find(ownerGuid); ownerItr != outfitDraftByGuid.end())
-        {
-            ownerItr->second.erase(slot);
-            if (ownerItr->second.empty())
-                outfitDraftByGuid.erase(ownerItr);
-        }
-        return true;
-    }
-
-    outfitDraftByGuid[ownerGuid][slot] = {
-        slot,
-        target->GetGUID().GetCounter(),
-        target->GetEntry(),
-        normalized
-    };
-    return true;
-}
-
-bool Transmogrification::StageSavedOutfit(Player* player, std::map<uint8, uint32> const& appearances, std::string& error)
-{
-    error.clear();
-    if (!player || appearances.empty())
-    {
-        error = "That saved outfit is empty.";
-        return false;
-    }
-
-    uint32 const ownerGuid = player->GetGUID().GetCounter();
-    outfitDraft previous;
-    if (auto itr = outfitDraftByGuid.find(ownerGuid); itr != outfitDraftByGuid.end())
-        previous = itr->second;
-    outfitDraftByGuid.erase(ownerGuid);
-
-    for (auto const& [slot, entry] : appearances)
-    {
-        if (!StageOutfitAppearance(player, slot, entry, error))
-        {
-            if (previous.empty())
-                outfitDraftByGuid.erase(ownerGuid);
-            else
-                outfitDraftByGuid[ownerGuid] = std::move(previous);
-            return false;
-        }
-    }
-
-    if (!GetOutfitDraft(player))
-    {
-        error = "That saved outfit is already active.";
-        return false;
-    }
-    return true;
-}
-
-bool Transmogrification::ClearOutfitDraft(Player* player)
-{
-    return player && outfitDraftByGuid.erase(player->GetGUID().GetCounter()) > 0;
-}
-
-bool Transmogrification::ClearOutfitDraftSlot(Player* player, uint8 slot)
-{
-    if (!player || slot >= EQUIPMENT_SLOT_END)
-        return false;
-
-    auto ownerItr = outfitDraftByGuid.find(player->GetGUID().GetCounter());
-    if (ownerItr == outfitDraftByGuid.end() || ownerItr->second.erase(slot) == 0)
-        return false;
-    if (ownerItr->second.empty())
-        outfitDraftByGuid.erase(ownerItr);
-    return true;
-}
-
-Transmogrification::outfitDraft const* Transmogrification::GetOutfitDraft(Player const* player) const
-{
-    if (!player)
-        return nullptr;
-    auto itr = outfitDraftByGuid.find(player->GetGUID().GetCounter());
-    return itr == outfitDraftByGuid.end() || itr->second.empty() ? nullptr : &itr->second;
-}
-
-Transmogrification::TransmogPrice Transmogrification::CalculateTransmogPrice(
-    ItemTemplate const* target, bool includeToken) const
-{
-    TransmogPrice price;
-    if (!target)
-        return price;
-
-    // Keep the original single-item price rules authoritative. Outfit preview
-    // totals are a sum of this result, never a separately implemented formula.
-    double const scaled = double(GetSpecialPrice(target)) * double(ScaledCostModifier);
-    double const total = scaled + double(CopperCost);
-    if (!std::isfinite(scaled) || !std::isfinite(total) || total >= double(std::numeric_limits<int32>::max()))
-        price.baseCopper = uint32(std::numeric_limits<int32>::max());
-    else if (total > 0.0)
-        price.baseCopper = uint32(total);
-
-    if (price.baseCopper > 0)
-    {
-        if (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
-            price.copper = price.baseCopper;
-
-        if (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS)
-        {
-            uint64 const maximumCharge = uint64(std::numeric_limits<int32>::max());
-            uint64 const flat = std::min<uint64>(VotePointsFlatCost, maximumCharge);
-            double const gold = double(price.baseCopper) / 10000.0;
-            double const scaledVotePoints = std::ceil(gold * double(VotePointsPerGold));
-            if (!std::isfinite(scaledVotePoints) || scaledVotePoints >= double(maximumCharge - flat))
-                price.votePoints = uint32(maximumCharge);
-            else
-                price.votePoints = uint32(flat + uint64(std::max(0.0, scaledVotePoints)));
-        }
-    }
-
-    if (includeToken && RequireToken)
-        price.tokens = TokenAmount;
-    return price;
-}
-
-Transmogrification::OutfitCostSummary Transmogrification::CalculateOutfitCost(Player* player, std::string* error) const
-{
-    OutfitCostSummary summary;
-    if (error)
-        error->clear();
-
-    outfitDraft const* draft = GetOutfitDraft(player);
-    if (!player || !draft)
-    {
-        if (error)
-            *error = "No appearance changes are being previewed.";
-        return summary;
-    }
-
-    auto fail = [&](std::string const& message)
-    {
-        if (error && error->empty())
-            *error = message;
-    };
-
-    uint64 votePoints = 0;
-    uint64 tokens = 0;
-    bool wouldCharge = false;
-    for (auto const& [slot, staged] : *draft)
-    {
-        Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!target || target->GetGUID().GetCounter() != staged.targetGuid || target->GetEntry() != staged.targetEntry)
-        {
-            fail("Equipment changed after the preview was created. Reopen the affected slot and choose its appearance again.");
-            return summary;
-        }
-
-        uint32 const appearance = staged.appearanceEntry;
-        uint32 const current = GetFakeEntry(target->GetGUID());
-        if (appearance == current)
-            continue;
-
-        if (appearance == HIDDEN_ITEM_ID)
-        {
-            fail("Hidden equipment appearances are disabled on RTG.");
-            return summary;
-        }
-        else if (appearance != 0)
-        {
-            ItemTemplate const* source = sObjectMgr->GetItemTemplate(appearance);
-            bool const carriedSource = player->HasItemCount(appearance, 1, false);
-            if (!CharacterCanUseAppearance(player, appearance) || !source
-                || !CanTransmogrifyItemWithItem(player, target->GetTemplate(), source, carriedSource))
-            {
-                fail("One previewed appearance is no longer owned or compatible.");
-                return summary;
-            }
-        }
-
-        ++summary.changedSlots;
-        if (appearance == 0)
-            continue;
-
-        TransmogPrice const price = CalculateTransmogPrice(target->GetTemplate());
-        summary.copper += price.copper;
-        votePoints += price.votePoints;
-        tokens += price.tokens;
-        wouldCharge = price.WouldCharge() || wouldCharge;
-    }
-
-    if (votePoints > std::numeric_limits<uint32>::max() || tokens > std::numeric_limits<uint32>::max())
-    {
-        fail("The combined preview cost is outside the supported range.");
-        return OutfitCostSummary{};
-    }
-
-    summary.votePoints = uint32(votePoints);
-    summary.tokens = uint32(tokens);
-    summary.freeOutfit = wouldCharge && HasFreeTransmogReady(player);
-    if (summary.freeOutfit)
-    {
-        summary.copper = 0;
-        summary.votePoints = 0;
-        summary.tokens = 0;
-    }
-    return summary;
-}
-
-bool Transmogrification::ApplyOutfitDraft(Player* player, std::string& result)
-{
-    result.clear();
-    std::string error;
-    OutfitCostSummary const cost = CalculateOutfitCost(player, &error);
-    if (!error.empty())
-    {
-        result = error;
-        return false;
-    }
-    if (!cost.changedSlots)
-    {
-        result = "The preview does not contain any appearance changes.";
-        return false;
-    }
-    if (cost.copper > uint64(std::numeric_limits<uint32>::max()) || !player->HasEnoughMoney(uint32(cost.copper)))
-    {
-        result = "You do not have enough money for this appearance preview.";
-        return false;
-    }
-    if (cost.votePoints && !HasVotePoints(player, cost.votePoints))
-    {
-        result = "You do not have enough Vote Points for this appearance preview.";
-        return false;
-    }
-    if (cost.tokens && !player->HasItemCount(TokenEntry, cost.tokens))
-    {
-        result = "You do not have enough transmog tokens for this appearance preview.";
-        return false;
-    }
-
-    // Use the original payment order and mutation calls. The outfit path only
-    // combines already-canonical per-slot totals; it is not a second economy.
-    if (cost.votePoints)
-    {
-        if (!SpendVotePoints(player, cost.votePoints))
-        {
-            result = "The Vote Point payment could not be completed. No appearance was applied.";
-            return false;
-        }
-    }
-    if (cost.tokens)
-        player->DestroyItemCount(TokenEntry, cost.tokens, true);
-    if (cost.copper)
-        player->ModifyMoney(-int64(cost.copper), false);
-
-    uint32 const ownerGuid = player->GetGUID().GetCounter();
-    outfitDraft const draft = outfitDraftByGuid[ownerGuid];
-    for (auto const& [slot, staged] : draft)
-    {
-        Item* target = player->GetItemByPos(INVENTORY_SLOT_BAG_0, slot);
-        if (!target || GetFakeEntry(target->GetGUID()) == staged.appearanceEntry)
-            continue;
-
-        if (staged.appearanceEntry == 0)
-            DeleteFakeEntry(player, slot, target);
-        else
-        {
-            SetFakeEntry(player, staged.appearanceEntry, slot, target);
-            target->UpdatePlayedTime(player);
-            target->SetOwnerGUID(player->GetGUID());
-            target->SetNotRefundable(player);
-            target->ClearSoulboundTradeable(player);
-        }
-    }
-    if (cost.freeOutfit)
-        MarkFreeTransmogUsed(player);
-    outfitDraftByGuid.erase(ownerGuid);
-
-    result = "Applied " + std::to_string(cost.changedSlots) + " appearance change";
-    if (cost.changedSlots != 1)
-        result += "s";
-    result += ".";
-    return true;
-}
-
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost) {
-    if (itemEntry == UINT_MAX || itemEntry == HIDDEN_ITEM_ID)
-        return LANG_ERR_TRANSMOG_INVALID_SRC_ENTRY;
-    if (!CharacterCanUseAppearance(player, itemEntry))
-        return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
+    if (itemEntry == UINT_MAX) // Hidden transmog
+    {
+        return Transmogrify(player, nullptr, slot, no_cost, true);
+    }
     std::unique_ptr<Item> itemTransmogrifier(Item::CreateItem(itemEntry, 1, 0));
     if (!itemTransmogrifier)
         return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
@@ -883,6 +533,66 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, ObjectGuid
 
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost, bool hidden_transmog)
 {
+    int32 cost = 0;
+    auto calcCopperCost = [this](ItemTemplate const* itemTemplate) -> int32
+    {
+        if (!itemTemplate)
+            return 0;
+
+        // Preserve the configured additive discount while keeping malformed or
+        // extreme values inside the signed range consumed by money APIs.
+        double const scaled = double(GetSpecialPrice(itemTemplate)) * double(ScaledCostModifier);
+        if (!std::isfinite(scaled))
+            return std::numeric_limits<int32>::max();
+
+        double const total = scaled + double(CopperCost);
+        if (total <= 0.0)
+            return 0;
+        if (total >= double(std::numeric_limits<int32>::max()))
+            return std::numeric_limits<int32>::max();
+        return int32(total);
+    };
+
+    auto calcVotePointsCost = [this](int32 copperCost) -> uint32
+    {
+        uint64 const maximumCharge = uint64(std::numeric_limits<int32>::max());
+        uint64 const flat = std::min<uint64>(VotePointsFlatCost, maximumCharge);
+        if (copperCost <= 0 || VotePointsPerGold <= 0.0f)
+            return uint32(flat);
+
+        double const gold = static_cast<double>(copperCost) / 10000.0; // 1 gold = 10000 copper
+        double const scaledValue = std::ceil(gold * static_cast<double>(VotePointsPerGold));
+        if (!std::isfinite(scaledValue) || scaledValue >= double(maximumCharge - flat))
+            return uint32(maximumCharge);
+
+        return uint32(flat + uint64(std::max(0.0, scaledValue)));
+    };
+
+    auto hasVotePoints = [player](uint32 vpCost) -> bool
+    {
+        if (vpCost == 0)
+            return true;
+        if (!player || !player->GetSession())
+            return false;
+
+        AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
+        return currency && currency->GetVP() >= vpCost;
+    };
+
+    auto spendVotePoints = [player](uint32 vpCost) -> bool
+    {
+        if (vpCost == 0)
+            return true;
+        if (!player || !player->GetSession())
+            return false;
+
+        AccountCurrency* currency = sCurrencyHandler->GetAccountCurrency(player->GetSession()->GetAccountId());
+        if (!currency || currency->GetVP() < vpCost)
+            return false;
+
+        currency->ModifyVP(-static_cast<int32>(vpCost));
+        return true;
+    };
     // slot of the transmogrified item
     if (slot >= EQUIPMENT_SLOT_END)
     {
@@ -900,25 +610,29 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
 
     if (hidden_transmog)
     {
-        TransmogPrice const price = CalculateTransmogPrice(itemTransmogrified->GetTemplate(), false);
+        cost = calcCopperCost(itemTransmogrified->GetTemplate());
 
-        bool const shouldCharge = !no_cost && !HiddenTransmogIsFree && price.baseCopper > 0;
+        bool const shouldCharge = !no_cost && !HiddenTransmogIsFree && cost > 0;
         bool const useFreeTransmog = shouldCharge && HasFreeTransmogReady(player);
 
         if (shouldCharge && !useFreeTransmog)
         {
+            bool const payGold = PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS;
+            bool const payVP = PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS;
+            uint32 const vpCost = payVP ? calcVotePointsCost(cost) : 0u;
+
             // Validate the entire mixed payment before consuming either
             // balance. Charging VP first could previously leave the player
             // short if the later gold check failed.
-            if (price.votePoints && !HasVotePoints(player, price.votePoints))
+            if (payVP && !hasVotePoints(vpCost))
                 return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-            if (price.copper && !player->HasEnoughMoney(price.copper))
+            if (payGold && !player->HasEnoughMoney(cost))
                 return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
 
-            if (price.votePoints && !SpendVotePoints(player, price.votePoints))
+            if (payVP && !spendVotePoints(vpCost))
                 return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-            if (price.copper)
-                player->ModifyMoney(-int64(price.copper), false);
+            if (payGold)
+                player->ModifyMoney(-cost, false);
         }
         SetFakeEntry(player, HIDDEN_ITEM_ID, slot, itemTransmogrified); // newEntry
         if (useFreeTransmog)
@@ -942,28 +656,37 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
         bool useFreeTransmog = false;
         if (!no_cost)
         {
-            TransmogPrice const price = CalculateTransmogPrice(itemTransmogrified->GetTemplate());
-            useFreeTransmog = price.WouldCharge() && HasFreeTransmogReady(player);
+            cost = calcCopperCost(itemTransmogrified->GetTemplate());
+
+            bool paidCost = cost > 0;
+            bool wouldCharge = RequireToken || paidCost;
+            useFreeTransmog = wouldCharge && HasFreeTransmogReady(player);
 
             if (!useFreeTransmog)
             {
+                bool const payGold = cost > 0
+                    && (PaymentType == TMOG_PAY_GOLD || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+                bool const payVP = cost > 0
+                    && (PaymentType == TMOG_PAY_VOTE_POINTS || PaymentType == TMOG_PAY_GOLD_AND_VOTE_POINTS);
+                uint32 const vpCost = payVP ? calcVotePointsCost(cost) : 0u;
+
                 // Pass 1: validate token and every currency before consuming
                 // any of them. This keeps mixed token/gold/VP payments atomic
                 // from the player's perspective.
-                if (price.tokens && !player->HasItemCount(TokenEntry, price.tokens))
+                if (RequireToken && !player->HasItemCount(TokenEntry, TokenAmount))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_TOKENS;
-                if (price.votePoints && !HasVotePoints(player, price.votePoints))
+                if (payVP && !hasVotePoints(vpCost))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-                if (price.copper && !player->HasEnoughMoney(price.copper))
+                if (payGold && !player->HasEnoughMoney(cost))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_MONEY;
 
                 // Pass 2: consume the already-validated payment once.
-                if (price.votePoints && !SpendVotePoints(player, price.votePoints))
+                if (payVP && !spendVotePoints(vpCost))
                     return LANG_ERR_TRANSMOG_NOT_ENOUGH_VOTE_POINTS;
-                if (price.tokens)
-                    player->DestroyItemCount(TokenEntry, price.tokens, true);
-                if (price.copper)
-                    player->ModifyMoney(-int64(price.copper), false);
+                if (RequireToken)
+                    player->DestroyItemCount(TokenEntry, TokenAmount, true);
+                if (payGold)
+                    player->ModifyMoney(-cost, false);
             }
         }
 
@@ -989,168 +712,61 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
     return LANG_ERR_TRANSMOG_OK;
 }
 
-char const* Transmogrification::GetCompatibilityFailureName(TransmogCompatibilityFailure failure)
+bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target, ItemTemplate const* source) const
 {
-    switch (failure)
-    {
-        case TransmogCompatibilityFailure::None: return "none";
-        case TransmogCompatibilityFailure::MissingTemplate: return "missing_template";
-        case TransmogCompatibilityFailure::SameItem: return "same_item";
-        case TransmogCompatibilityFailure::DuplicateDisplay: return "duplicate_display";
-        case TransmogCompatibilityFailure::ItemClass: return "item_class";
-        case TransmogCompatibilityFailure::Quality: return "quality";
-        case TransmogCompatibilityFailure::ClassOrRace: return "class_or_race";
-        case TransmogCompatibilityFailure::RequiredSkillOrSpell: return "required_skill_or_spell";
-        case TransmogCompatibilityFailure::ArmorSubclass: return "armor_subclass";
-        case TransmogCompatibilityFailure::WeaponFamily: return "weapon_family";
-        case TransmogCompatibilityFailure::Handedness: return "handedness";
-        case TransmogCompatibilityFailure::TargetSlot: return "target_slot";
-        case TransmogCompatibilityFailure::RangedFamily: return "ranged_family";
-        case TransmogCompatibilityFailure::ExplicitlyBlocked: return "explicitly_blocked";
-        case TransmogCompatibilityFailure::Level: return "level";
-        case TransmogCompatibilityFailure::EventOrStats: return "event_or_stats";
-    }
-    return "unknown";
-}
 
-char const* Transmogrification::GetCompatibilityFailurePlayerText(TransmogCompatibilityFailure failure)
-{
-    switch (failure)
-    {
-        case TransmogCompatibilityFailure::None: return "compatible";
-        case TransmogCompatibilityFailure::Quality: return "quality rules";
-        case TransmogCompatibilityFailure::ClassOrRace: return "class or faction rules";
-        case TransmogCompatibilityFailure::RequiredSkillOrSpell: return "skill or spell requirements";
-        case TransmogCompatibilityFailure::ArmorSubclass: return "armor-family rules";
-        case TransmogCompatibilityFailure::WeaponFamily: return "weapon-family rules";
-        case TransmogCompatibilityFailure::Handedness: return "weapon handedness rules";
-        case TransmogCompatibilityFailure::TargetSlot: return "target-slot rules";
-        case TransmogCompatibilityFailure::RangedFamily: return "ranged-weapon rules";
-        case TransmogCompatibilityFailure::Level: return "level requirements";
-        case TransmogCompatibilityFailure::DuplicateDisplay: return "a duplicate visual";
-        case TransmogCompatibilityFailure::SameItem: return "the equipped item itself";
-        case TransmogCompatibilityFailure::ExplicitlyBlocked: return "an explicit Transmog restriction";
-        case TransmogCompatibilityFailure::ItemClass: return "armor/weapon type rules";
-        case TransmogCompatibilityFailure::EventOrStats: return "item eligibility rules";
-        case TransmogCompatibilityFailure::MissingTemplate: return "missing item data";
-    }
-    return "compatibility rules";
-}
+    if (!target || !source)
+        return false;
 
-Transmogrification::CompatibilityResult Transmogrification::EvaluateCompatibility(
-    Player* player, ItemTemplate const* target, ItemTemplate const* source,
-    bool ignoreSourceLevelRequirement) const
-{
-    auto reject = [](TransmogCompatibilityFailure failure) -> CompatibilityResult
-    {
-        return { false, failure };
-    };
-
-    if (!player || !target || !source)
-        return reject(TransmogCompatibilityFailure::MissingTemplate);
     if (source->ItemId == target->ItemId)
-        return reject(TransmogCompatibilityFailure::SameItem);
+        return false;
+
     if (source->DisplayInfoID == target->DisplayInfoID)
-        return reject(TransmogCompatibilityFailure::DuplicateDisplay);
+        return false;
+
     if (source->Class != target->Class)
-        return reject(TransmogCompatibilityFailure::ItemClass);
+        return false;
 
-    auto unsupportedInventoryType = [](uint32 inventoryType)
-    {
-        return inventoryType == INVTYPE_BAG || inventoryType == INVTYPE_RELIC
-            || inventoryType == INVTYPE_FINGER || inventoryType == INVTYPE_TRINKET
-            || inventoryType == INVTYPE_AMMO || inventoryType == INVTYPE_QUIVER;
-    };
-    if (unsupportedInventoryType(source->InventoryType) || unsupportedInventoryType(target->InventoryType))
-        return reject(TransmogCompatibilityFailure::TargetSlot);
+    if (source->InventoryType == INVTYPE_BAG ||
+        source->InventoryType == INVTYPE_RELIC ||
+        // source->InventoryType == INVTYPE_BODY ||
+        source->InventoryType == INVTYPE_FINGER ||
+        source->InventoryType == INVTYPE_TRINKET ||
+        source->InventoryType == INVTYPE_AMMO ||
+        source->InventoryType == INVTYPE_QUIVER)
+        return false;
 
-    auto suitabilityFailure = [this, player](ItemTemplate const* proto, bool ignoreLevel)
-    {
-        if (!proto || (proto->Class != ITEM_CLASS_ARMOR && proto->Class != ITEM_CLASS_WEAPON))
-            return TransmogCompatibilityFailure::ItemClass;
-        if (IsAllowed(proto->ItemId))
-            return TransmogCompatibilityFailure::None;
-        if (IsNotAllowed(proto->ItemId)
-            || (!AllowFishingPoles && proto->Class == ITEM_CLASS_WEAPON
-                && proto->SubClass == ITEM_SUBCLASS_WEAPON_FISHING_POLE))
-            return TransmogCompatibilityFailure::ExplicitlyBlocked;
-        if (!IsAllowedQuality(proto->Quality, player->GetGUID()))
-            return TransmogCompatibilityFailure::Quality;
-        bool invalidStats = false;
-        if (!IgnoreReqStats && !proto->RandomProperty && !proto->RandomSuffix && proto->StatsCount > 0)
-        {
-            invalidStats = true;
-            for (uint8 index = 0; index < proto->StatsCount; ++index)
-                if (proto->ItemStat[index].ItemStatValue != 0)
-                {
-                    invalidStats = false;
-                    break;
-                }
-        }
-        if ((!IgnoreReqEvent && proto->HolidayId && !IsHolidayActive((HolidayIds)proto->HolidayId))
-            || invalidStats)
-            return TransmogCompatibilityFailure::EventOrStats;
+    if (target->InventoryType == INVTYPE_BAG ||
+        target->InventoryType == INVTYPE_RELIC ||
+        // target->InventoryType == INVTYPE_BODY ||
+        target->InventoryType == INVTYPE_FINGER ||
+        target->InventoryType == INVTYPE_TRINKET ||
+        target->InventoryType == INVTYPE_AMMO ||
+        target->InventoryType == INVTYPE_QUIVER)
+        return false;
 
-        bool const isCloak = proto->InventoryType == INVTYPE_CLOAK;
-        uint32 const subclassSkill = proto->GetSkill();
-        if (!isCloak && proto->SubClass > 0 && subclassSkill
-            && player->GetSkillValue(subclassSkill) == 0)
-        {
-            if (proto->Class == ITEM_CLASS_ARMOR && !AllowMixedArmorTypes)
-                return TransmogCompatibilityFailure::ArmorSubclass;
-            if (proto->Class == ITEM_CLASS_WEAPON && AllowMixedWeaponTypes != MIXED_WEAPONS_LOOSE)
-                return TransmogCompatibilityFailure::WeaponFamily;
-        }
-
-        if ((proto->HasFlag2(ITEM_FLAG2_FACTION_HORDE) && player->GetTeamId() != TEAM_HORDE)
-            || (proto->HasFlag2(ITEM_FLAG2_FACTION_ALLIANCE) && player->GetTeamId() != TEAM_ALLIANCE)
-            || (!IgnoreReqClass && (proto->AllowableClass & player->getClassMask()) == 0)
-            || (!IgnoreReqRace && (proto->AllowableRace & player->getRaceMask()) == 0))
-            return TransmogCompatibilityFailure::ClassOrRace;
-
-        if (!IgnoreReqSkill && proto->RequiredSkill != 0
-            && (player->GetSkillValue(proto->RequiredSkill) == 0
-                || player->GetSkillValue(proto->RequiredSkill) < proto->RequiredSkillRank))
-            return TransmogCompatibilityFailure::RequiredSkillOrSpell;
-        if (!ignoreLevel && !IgnoreLevelRequirement(player->GetGUID())
-            && player->GetLevel() < proto->RequiredLevel)
-            return TransmogCompatibilityFailure::Level;
-        if (AllowLowerTiers && TierAvailable(player, 0, proto->SubClass))
-            return TransmogCompatibilityFailure::None;
-        if (!IgnoreReqSpell && proto->RequiredSpell != 0 && !player->HasSpell(proto->RequiredSpell))
-            return TransmogCompatibilityFailure::RequiredSkillOrSpell;
-        return TransmogCompatibilityFailure::None;
-    };
-
-    if (TransmogCompatibilityFailure failure = suitabilityFailure(target, false);
-        failure != TransmogCompatibilityFailure::None)
-        return reject(failure);
-    if (TransmogCompatibilityFailure failure = suitabilityFailure(source, ignoreSourceLevelRequirement);
-        failure != TransmogCompatibilityFailure::None)
-        return reject(failure);
+    if (!SuitableForTransmogrification(player, target) || !SuitableForTransmogrification(player, source))
+        return false;
 
     if (IsRangedWeapon(source->Class, source->SubClass) != IsRangedWeapon(target->Class, target->SubClass))
-        return reject(TransmogCompatibilityFailure::RangedFamily);
+        return false;
 
+    // Cloaks are one visual family even when custom or legacy item rows use
+    // different armor subclasses (commonly Cloth versus Miscellaneous). Their
+    // shared INVTYPE_CLOAK is the compatibility boundary; requiring subclass
+    // equality incorrectly hides otherwise valid cloak appearances.
     bool const isCloakPair = source->InventoryType == INVTYPE_CLOAK
         && target->InventoryType == INVTYPE_CLOAK;
-    if (source->SubClass != target->SubClass && !isCloakPair
+
+    if (source->SubClass != target->SubClass
+        && !isCloakPair
         && !IsSubclassMismatchAllowed(player, source, target))
-        return reject(target->Class == ITEM_CLASS_WEAPON
-            ? TransmogCompatibilityFailure::WeaponFamily
-            : TransmogCompatibilityFailure::ArmorSubclass);
+        return false;
+
     if (source->InventoryType != target->InventoryType && !IsInvTypeMismatchAllowed(source, target))
-        return reject(target->Class == ITEM_CLASS_WEAPON
-            ? TransmogCompatibilityFailure::Handedness
-            : TransmogCompatibilityFailure::TargetSlot);
+        return false;
 
-    return { true, TransmogCompatibilityFailure::None };
-}
-
-bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target,
-    ItemTemplate const* source, bool ignoreSourceLevelRequirement) const
-{
-    return EvaluateCompatibility(player, target, source, ignoreSourceLevelRequirement).allowed;
+    return true;
 }
 
 bool Transmogrification::IsSubclassMismatchAllowed(Player *player, const ItemTemplate *source, const ItemTemplate *target) const
@@ -1267,7 +883,7 @@ bool Transmogrification::IsTieredArmorSubclass(uint32 subclass) const
     return subclass == ITEM_SUBCLASS_ARMOR_PLATE || subclass == ITEM_SUBCLASS_ARMOR_MAIL || subclass == ITEM_SUBCLASS_ARMOR_LEATHER || subclass == ITEM_SUBCLASS_ARMOR_CLOTH;
 }
 
-bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTemplate const* proto, bool ignoreLevelRequirement) const
+bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTemplate const* proto) const
 {
     // ItemTemplate const* proto = item->GetTemplate();
     if (!player || !proto)
@@ -1325,7 +941,7 @@ bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTempl
             return false;
     }
 
-    if (!ignoreLevelRequirement && !IgnoreLevelRequirement(player->GetGUID()) && player->GetLevel() < proto->RequiredLevel)
+    if (!IgnoreLevelRequirement(player->GetGUID()) && player->GetLevel() < proto->RequiredLevel)
         return false;
 
     if (AllowLowerTiers && TierAvailable(player, 0, proto->SubClass))
@@ -1687,8 +1303,8 @@ void Transmogrification::LoadConfig(bool reload)
     IgnoreReqStats = sConfigMgr->GetOption<bool>("Transmogrification.IgnoreReqStats", false);
     UseCollectionSystem = sConfigMgr->GetOption<bool>("Transmogrification.UseCollectionSystem", true);
     UseVendorInterface = sConfigMgr->GetOption<bool>("Transmogrification.UseVendorInterface", false);
-    AllowHiddenTransmog = false; // RTG intentionally disallows creating hidden equipment appearances.
-    HiddenTransmogIsFree = false; // Retained only for safe legacy-row handling; new hidden appearances are impossible.
+    AllowHiddenTransmog = sConfigMgr->GetOption<bool>("Transmogrification.AllowHiddenTransmog", true);
+    HiddenTransmogIsFree = sConfigMgr->GetOption<bool>("Transmogrification.HiddenTransmogIsFree", true);
     TrackUnusableItems = sConfigMgr->GetOption<bool>("Transmogrification.TrackUnusableItems", true);
     RetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.RetroActiveAppearances", true);
     ResetRetroActiveAppearances = sConfigMgr->GetOption<bool>("Transmogrification.ResetRetroActiveAppearancesFlag", false);

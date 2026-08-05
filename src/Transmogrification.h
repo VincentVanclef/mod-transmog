@@ -15,12 +15,11 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <map>
-#include <string>
 
 #define PRESETS // comment this line to disable preset feature totally
 #define HIDDEN_ITEM_ID 1 // used for hidden transmog - do not use a valid equipment ID
 #define MAX_OPTIONS 25 // do not alter
+#define MAX_SEARCH_STRING_LENGTH 50
 
 class Item;
 class Player;
@@ -83,29 +82,6 @@ enum TransmogPaymentType : uint8
     TMOG_PAY_GOLD_AND_VOTE_POINTS = 2
 };
 
-// Stable machine-readable compatibility outcomes shared by browsing, staging,
-// saved outfits, and final application. Keep numeric values stable because the
-// Portable Transmog v2 gossip protocol publishes them to the Wrath client.
-enum class TransmogCompatibilityFailure : uint8
-{
-    None = 0,
-    MissingTemplate = 1,
-    SameItem = 2,
-    DuplicateDisplay = 3,
-    ItemClass = 4,
-    Quality = 5,
-    ClassOrRace = 6,
-    RequiredSkillOrSpell = 7,
-    ArmorSubclass = 8,
-    WeaponFamily = 9,
-    Handedness = 10,
-    TargetSlot = 11,
-    RangedFamily = 12,
-    ExplicitlyBlocked = 13,
-    Level = 14,
-    EventOrStats = 15
-};
-
 enum ArmorClassSpellIDs
 {
     SPELL_PLATE   = 750,
@@ -149,6 +125,7 @@ public:
     typedef std::unordered_map<ObjectGuid, uint32> transmog2Data;
     typedef std::unordered_map<ObjectGuid, transmog2Data> transmogMap;
     typedef std::unordered_map<uint32, std::unordered_set<uint32>> collectionCacheMap;
+    typedef std::unordered_map<uint32, std::string> searchStringMap;
     typedef std::unordered_map<uint32, std::vector<uint32>> transmogPlusData;
     typedef std::unordered_map<ObjectGuid, uint8> selectedSlotMap;
     
@@ -157,45 +134,6 @@ public:
     transmogData dataMap; // dataMap[iGUID] = pGUID
     collectionCacheMap collectionCache;
     selectedSlotMap selectionCache;
-
-    struct OutfitDraftSlot
-    {
-        uint8 slot = 0;
-        uint32 targetGuid = 0;
-        uint32 targetEntry = 0;
-        uint32 appearanceEntry = 0; // 0 restores original; HIDDEN_ITEM_ID is accepted only as legacy data and is rejected for new drafts.
-    };
-
-    struct OutfitCostSummary
-    {
-        uint64 copper = 0;
-        uint32 votePoints = 0;
-        uint32 tokens = 0;
-        uint32 changedSlots = 0;
-        bool freeOutfit = false;
-    };
-
-    // Canonical per-slot price produced by the same rules used by the original
-    // single-item Transmogrify path. Outfit previews only add these values.
-    struct TransmogPrice
-    {
-        uint32 baseCopper = 0;
-        uint32 copper = 0;
-        uint32 votePoints = 0;
-        uint32 tokens = 0;
-
-        bool WouldCharge() const { return baseCopper > 0 || tokens > 0; }
-    };
-
-    struct CompatibilityResult
-    {
-        bool allowed = false;
-        TransmogCompatibilityFailure failure = TransmogCompatibilityFailure::MissingTemplate;
-    };
-
-    typedef std::map<uint8, OutfitDraftSlot> outfitDraft;
-    typedef std::unordered_map<uint32, outfitDraft> outfitDraftMap;
-    outfitDraftMap outfitDraftByGuid;
 
 #ifdef PRESETS
     bool EnableSetInfo;
@@ -208,6 +146,7 @@ public:
     typedef std::map<uint8, std::string> presetIdMap;
     typedef std::unordered_map<ObjectGuid, presetIdMap> presetNameMap;
     presetNameMap presetByName; // presetByName[pGUID][presetID] = presetName
+    searchStringMap searchStringByPlayer;
 
     void PresetTransmog(Player* player, Item* itemTransmogrified, uint32 fakeEntry, uint8 slot);
 
@@ -324,27 +263,14 @@ public:
     uint32 GetFakeEntry(ObjectGuid itemGUID) const;
     void UpdateItem(Player* player, Item* item) const;
     void DeleteFakeEntry(Player* player, uint8 slot, Item* itemTransmogrified, CharacterDatabaseTransaction* trans = nullptr);
-    void SetFakeEntry(Player* player, uint32 newEntry, uint8 slot, Item* itemTransmogrified, CharacterDatabaseTransaction* trans = nullptr);
+    void SetFakeEntry(Player* player, uint32 newEntry, uint8 slot, Item* itemTransmogrified);
     bool AddCollectedAppearance(uint32 ownerGuid, uint32 itemId);
-    bool CharacterCanUseAppearance(Player* player, uint32 itemEntry) const;
-
-    bool StageOutfitAppearance(Player* player, uint8 slot, uint32 appearanceEntry, std::string& error);
-    bool StageSavedOutfit(Player* player, std::map<uint8, uint32> const& appearances, std::string& error);
-    bool ClearOutfitDraft(Player* player);
-    bool ClearOutfitDraftSlot(Player* player, uint8 slot);
-    outfitDraft const* GetOutfitDraft(Player const* player) const;
-    TransmogPrice CalculateTransmogPrice(ItemTemplate const* target, bool includeToken = true) const;
-    OutfitCostSummary CalculateOutfitCost(Player* player, std::string* error = nullptr) const;
-    bool ApplyOutfitDraft(Player* player, std::string& result);
 
     TransmogAcoreStrings Transmogrify(Player* player, ObjectGuid itemGUID, uint8 slot, /*uint32 newEntry, */bool no_cost = false);
     TransmogAcoreStrings Transmogrify(Player* player, uint32 itemEntry, uint8 slot, /*uint32 newEntry, */bool no_cost = false);
     TransmogAcoreStrings Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost = false, bool hidden_transmog = false);
-    bool CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* destination, ItemTemplate const* source, bool ignoreSourceLevelRequirement = false) const;
-    CompatibilityResult EvaluateCompatibility(Player* player, ItemTemplate const* destination, ItemTemplate const* source, bool ignoreSourceLevelRequirement = false) const;
-    static char const* GetCompatibilityFailureName(TransmogCompatibilityFailure failure);
-    static char const* GetCompatibilityFailurePlayerText(TransmogCompatibilityFailure failure);
-    bool SuitableForTransmogrification(Player* player, ItemTemplate const* proto, bool ignoreLevelRequirement = false) const;
+    bool CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* destination, ItemTemplate const* source) const;
+    bool SuitableForTransmogrification(Player* player, ItemTemplate const* proto) const;
     bool SuitableForTransmogrification(ObjectGuid guid, ItemTemplate const* proto) const;
     bool IsItemTransmogrifiable(ItemTemplate const* proto, ObjectGuid const &playerGuid) const;
     uint32 GetSpecialPrice(ItemTemplate const* proto) const;
