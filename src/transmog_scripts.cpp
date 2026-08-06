@@ -478,12 +478,13 @@ int32 GetTransmogSetPrice(uint64 baseCopper)
 }
 #endif
 
-bool ValidForTransmog (Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate, bool hasSearch, std::string const& searchTerm)
+bool ValidForTransmog (Player* player, ItemTemplate const* targetTemplate, ItemTemplate const* sourceTemplate,
+    bool hasSearch, std::string const& searchTerm, bool carriedSource)
 {
     if (!player || !targetTemplate || !sourceTemplate)
         return false;
 
-    if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate))
+    if (!sT->CanTransmogrifyItemWithItem(player, targetTemplate, sourceTemplate, carriedSource))
         return false;
 
     // Keep the currently-applied appearance in the browser. This makes it clear that
@@ -523,7 +524,7 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
     // previous collection path allocated ownerless Item objects that were never
     // destroyed merely to access their templates.
     std::unordered_set<uint32> addedEntries;
-    auto addValidSource = [&](ItemTemplate const* sourceTemplate)
+    auto addValidSource = [&](ItemTemplate const* sourceTemplate, bool carriedSource)
     {
         if (!sourceTemplate)
             return;
@@ -532,7 +533,7 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
         if (addedEntries.find(entry) != addedEntries.end())
             return;
 
-        if (!ValidForTransmog(player, targetTemplate, sourceTemplate, hasSearch, searchTerm))
+        if (!ValidForTransmog(player, targetTemplate, sourceTemplate, hasSearch, searchTerm, carriedSource))
             return;
 
         addedEntries.insert(entry);
@@ -545,7 +546,7 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
         auto const collectionItr = sT->collectionCache.find(ownerGuid);
         if (collectionItr != sT->collectionCache.end())
             for (uint32 itemId : collectionItr->second)
-                addValidSource(sObjectMgr->GetItemTemplate(itemId));
+                addValidSource(sObjectMgr->GetItemTemplate(itemId), false);
     }
 
     // Always merge the player's live backpack and equipped bags. This preserves
@@ -553,7 +554,7 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
     // they have been written to the collection cache.
     for (uint8 i = INVENTORY_SLOT_ITEM_START; i < INVENTORY_SLOT_ITEM_END; ++i)
         if (Item* sourceItem = player->GetItemByPos(INVENTORY_SLOT_BAG_0, i))
-            addValidSource(sourceItem->GetTemplate());
+            addValidSource(sourceItem->GetTemplate(), true);
 
     for (uint8 i = INVENTORY_SLOT_BAG_START; i < INVENTORY_SLOT_BAG_END; ++i)
     {
@@ -563,7 +564,7 @@ std::vector<ItemTemplate const*> GetValidTransmogs (Player* player, Item* target
 
         for (uint32 j = 0; j < bag->GetBagSize(); ++j)
             if (Item* sourceItem = player->GetItemByPos(i, j))
-                addValidSource(sourceItem->GetTemplate());
+                addValidSource(sourceItem->GetTemplate(), true);
     }
 
     if (sConfigMgr->GetOption<bool>("Transmogrification.EnableSortByQualityAndName", true))

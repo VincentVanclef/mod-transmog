@@ -513,7 +513,12 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, uint32 ite
     if (!itemTransmogrifier)
         return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
 
-    return Transmogrify(player, itemTransmogrifier.get(), slot, no_cost, false);
+    // A physical source carried by the player is immediately usable as an
+    // appearance even when its original expansion level is above RTG's level
+    // cap. This bypasses only the source level gate; every other compatibility
+    // and ownership check remains authoritative.
+    bool const carriedSource = player && player->HasItemCount(itemEntry, 1, false);
+    return Transmogrify(player, itemTransmogrifier.get(), slot, no_cost, false, carriedSource);
 }
 
 TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, ObjectGuid itemGUID, uint8 slot, /*uint32 newEntry, */bool no_cost) {
@@ -528,10 +533,10 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, ObjectGuid
             return LANG_ERR_TRANSMOG_MISSING_SRC_ITEM;
         }
     }
-    return Transmogrify(player, itemTransmogrifier, slot, no_cost, false);
+    return Transmogrify(player, itemTransmogrifier, slot, no_cost, false, itemTransmogrifier != nullptr);
 }
 
-TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost, bool hidden_transmog)
+TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* itemTransmogrifier, uint8 slot, /*uint32 newEntry, */bool no_cost, bool hidden_transmog, bool ignoreSourceLevelRequirement)
 {
     int32 cost = 0;
     auto calcCopperCost = [this](ItemTemplate const* itemTemplate) -> int32
@@ -647,7 +652,7 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
     }
     else
     {
-        if (!CanTransmogrifyItemWithItem(player, itemTransmogrified->GetTemplate(), itemTransmogrifier->GetTemplate()))
+        if (!CanTransmogrifyItemWithItem(player, itemTransmogrified->GetTemplate(), itemTransmogrifier->GetTemplate(), ignoreSourceLevelRequirement))
         {
             //TC_LOG_DEBUG(LOG_FILTER_NETWORKIO, "WORLD: HandleTransmogrifyItems - Player (GUID: {}, name: {}) failed CanTransmogrifyItemWithItem ({} with {}).", player->GetGUIDLow(), player->GetName(), itemTransmogrified->GetEntry(), itemTransmogrifier->GetEntry());
             return LANG_ERR_TRANSMOG_INVALID_ITEMS;
@@ -712,7 +717,7 @@ TransmogAcoreStrings Transmogrification::Transmogrify(Player* player, Item* item
     return LANG_ERR_TRANSMOG_OK;
 }
 
-bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target, ItemTemplate const* source) const
+bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplate const* target, ItemTemplate const* source, bool ignoreSourceLevelRequirement) const
 {
 
     if (!target || !source)
@@ -745,7 +750,8 @@ bool Transmogrification::CanTransmogrifyItemWithItem(Player* player, ItemTemplat
         target->InventoryType == INVTYPE_QUIVER)
         return false;
 
-    if (!SuitableForTransmogrification(player, target) || !SuitableForTransmogrification(player, source))
+    if (!SuitableForTransmogrification(player, target)
+        || !SuitableForTransmogrification(player, source, ignoreSourceLevelRequirement))
         return false;
 
     if (IsRangedWeapon(source->Class, source->SubClass) != IsRangedWeapon(target->Class, target->SubClass))
@@ -883,7 +889,7 @@ bool Transmogrification::IsTieredArmorSubclass(uint32 subclass) const
     return subclass == ITEM_SUBCLASS_ARMOR_PLATE || subclass == ITEM_SUBCLASS_ARMOR_MAIL || subclass == ITEM_SUBCLASS_ARMOR_LEATHER || subclass == ITEM_SUBCLASS_ARMOR_CLOTH;
 }
 
-bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTemplate const* proto) const
+bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTemplate const* proto, bool ignoreLevelRequirement) const
 {
     // ItemTemplate const* proto = item->GetTemplate();
     if (!player || !proto)
@@ -941,7 +947,7 @@ bool Transmogrification::SuitableForTransmogrification(Player* player, ItemTempl
             return false;
     }
 
-    if (!IgnoreLevelRequirement(player->GetGUID()) && player->GetLevel() < proto->RequiredLevel)
+    if (!ignoreLevelRequirement && !IgnoreLevelRequirement(player->GetGUID()) && player->GetLevel() < proto->RequiredLevel)
         return false;
 
     if (AllowLowerTiers && TierAvailable(player, 0, proto->SubClass))
